@@ -1,5 +1,5 @@
-function simulation_run!!(img_bd::BufferedDataset, phs_bd::BufferedDataset, phase_buffers,
-        image_buffers, true_sky_adapt, n; verbose=true)
+function simulation_run!!(img_bd::BufferedDataset, phs_bd::BufferedDataset,
+        phase_buffers::PhaseBuffers, image_buffers, true_sky_adapt, n; verbose=true)
     batch = batch_length(phase_buffers)
     p = Progress(n, desc="Simulating images", enabled=verbose, dt=1)
     for j in 1:cld(n, batch)
@@ -14,7 +14,7 @@ function simulation_run!!(img_bd::BufferedDataset, phs_bd::BufferedDataset, phas
     finish!(p)
 end
 
-function simulation_run(file, phsbuffers, imgbuffers, true_sky_adapt, n;
+function simulation_run(file, phsbuffers::PhaseBuffers, imgbuffers, true_sky_adapt, n;
             verbose=true, savephases::Bool=true)
     open_file(file) do fid
         batch = batch_length(phsbuffers)
@@ -74,17 +74,9 @@ the results to an HDF5 file.
 function simulate_phases(atm_spec::AtmosphereSpec, plate_size, d=nothing; n::Int,
         grid_step::Union{Nothing,Number}=nothing, batch::Int=DEFAULT_BATCH, file=nothing,
         verbose=true, deviceadapter=Array)
-    if grid_step === nothing
-        if d === nothing
-            atm_spec isa SavedPhases || throw(ArgumentError(
-                "Either aperture diameter `d` or `grid_step` must be provided."))
-            grid_step = atm_spec.grid_step === nothing ? 1 : atm_spec.grid_step
-        else
-            grid_step = d / maximum(plate_size)
-        end
-    end
     batch = min(batch, n)
-    phase_buffers = prepare_phasebuffers(atm_spec, plate_size, grid_step, batch, deviceadapter)
+    phase_buffers = PhaseBuffers(atm_spec, plate_size, d;
+        grid_step=grid_step, batch=batch, deviceadapter=deviceadapter)
     simulation_run(file, phase_buffers, nothing, nothing, n; verbose=verbose)
 end
 
