@@ -1,4 +1,5 @@
-import AtmosphericTurbulenceSimulator: HardingSpec, prepare_buffers, isfinite_photons, convert_numtype
+import AtmosphericTurbulenceSimulator: prepare_buffers, isfinite_photons, convert_numtype,
+    nstages, plate_size
 using Unitful
 
 @testset "Constructors" begin
@@ -18,18 +19,18 @@ using Unitful
         @test unit(atm32.r₀) == m
 
         # Test Harding interpolation
-        hspec = HardingSpec((64, 64); interpolate=:auto)
-        @test hspec.nsteps == 2
-        @test hspec.size_to == (64, 64)
-        @test hspec.size_from == (25, 25)
+        hi = HardingInterpolator((64, 64), 4; nsteps=:auto)
+        @test nstages(hi) == 2
+        @test plate_size(hi) == (64, 64)
+        @test first(hi.stage_sizes) == (25, 25)
 
-        hspec_1pass = HardingSpec((64, 64); interpolate=1)
-        @test hspec_1pass.nsteps == 1
-        @test hspec_1pass.size_to == (64, 64)
-        @test hspec_1pass.size_from == (38, 38)
+        hi_1pass = HardingInterpolator((64, 64), 4; nsteps=1)
+        @test nstages(hi_1pass) == 1
+        @test plate_size(hi_1pass) == (64, 64)
+        @test first(hi_1pass.stage_sizes) == (38, 38)
 
-        # Test that small interpolate_from throws error
-        @test_throws ArgumentError HardingSpec((64, 64); interpolate_from=(8, 8))
+        # Test that small size_from throws error
+        @test_throws ArgumentError HardingInterpolator((64, 64), 4; size_from=(8, 8))
     end
 
     @testset "SavedPhases" begin
@@ -226,7 +227,7 @@ using Unitful
         @test length(img_buf2.offsets) == 1
         @test img_buf2.offsets[1].can_ff
 
-        atm2 = SingleLayer(5.0; interpolate=:auto, wind_velocity=(10.0, 5.0))
+        atm2 = SingleLayer(5.0; harding=(; nsteps=:auto), wind_velocity=(10.0, 5.0))
         img_buf3 = prepare_buffers(Int32, atm2, img_spec2, 5, Array)[2]
         @test length(img_buf3.offsets) == 10
         @test img_buf3.offsets[1].can_ff

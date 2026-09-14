@@ -66,8 +66,8 @@
 
     @testset "Phase statistics" begin
         # Generate phase screens and check basic statistics
-        atm1 = SingleLayer(Float32, 20cm, interpolate=2)
-        atm2 = SingleLayer(Float32, 20cm, interpolate_from=(15, 15))
+        atm1 = SingleLayer(Float32, 20cm, harding=(; nsteps=2))
+        atm2 = SingleLayer(Float32, 20cm, harding=(; size_from=(15, 15)))
 
         Random.seed!(123)
         for atm in (atm1, atm2)

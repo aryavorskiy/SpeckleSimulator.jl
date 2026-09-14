@@ -108,13 +108,13 @@ using Random
     @testset "Aperture diameter" begin
         # 4 m aperture, 1 m r_0, 3 sqrt(2)/4 m/s wind velocity, 1 s exposure
         img_spec1 = ImagingSpec(ap, 4, PhotonCount(Inf), exposure=1)
-        atm1 = SingleLayer(1, wind_velocity=(0.75, 0.75), interpolate=:auto)
+        atm1 = SingleLayer(1, wind_velocity=(0.75, 0.75), harding=(; nsteps=:auto))
         Random.seed!(123)
         res1 = simulate_images(atm1, img_spec1, n=10, verbose=false)
 
         # 2 m aperture, 0.5 m r_0, sqrt(2)/8 m/s wind velocity, 3 s exposure
         img_spec2 = ImagingSpec(ap, 2m, PhotonCount(Inf), exposure=3s)
-        atm2 = SingleLayer(50cm, wind_velocity=(0.125m/s, 0.125m/s), interpolate=:auto)
+        atm2 = SingleLayer(50cm, wind_velocity=(0.125m/s, 0.125m/s), harding=(; nsteps=:auto))
         Random.seed!(123)
         res2 = simulate_images(atm2, img_spec2, n=10, verbose=false)
 

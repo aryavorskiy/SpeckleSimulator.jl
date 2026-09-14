@@ -36,7 +36,7 @@ function AtmosphericTurbulenceSimulator.speckle_viewer(::Type{T}=Float64;
     wl_s, bw_s, exp_s = (s.value for s in img_sg.sliders)
 
     phase_screen = lift(newphase_btn.clicks) do _
-        atm = SingleLayer(T, first(r0_range); interpolate=:auto)
+        atm = SingleLayer(T, first(r0_range))
         pad = NoUnits(maximum(wind_range) / d * maximum(exptime_range))
         simulate_phases(atm, ceil.(Int, size(aperture) .* (1 + pad, 1));
             n=1, verbose=false, grid_step=d / size(aperture, 2), deviceadapter=deviceadapter)

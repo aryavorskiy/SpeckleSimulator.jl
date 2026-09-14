@@ -98,6 +98,8 @@ KarhunenLoeveSampler(sz::NTuple{2,Int}, covmat::AbstractMatrix, batch::Int) =
     KarhunenLoeveSampler(sz, eigen(Symmetric(covmat)), batch)
 plate_size(sampler::KarhunenLoeveSampler) = sampler.shape
 batch_length(sampler::KarhunenLoeveSampler) = size(sampler.noise_buffer, 2)
+allocate_phases(sampler::KarhunenLoeveSampler) =
+    similar(sampler.noise_buffer, (plate_size(sampler)..., batch_length(sampler)))
 
 """
     samplephases!(out, sampler::KarhunenLoeveSampler[, α, β])
@@ -166,6 +168,7 @@ function prepare_phasebuffers(spec::SingleLayer, plate_size::NTuple{2,Int}, grid
     end
     kl = KarhunenLoeveSampler(low_size, (E, U), batch)
     r₀_px = convert(T, NoUnits(spec.r₀ / grid_step))
+    nstages(interpolator) == 0 && return PhaseBuffers(kl, nothing, nothing, r₀_px^(-5//6))
     low_array = adapt_storage(deviceadapter, zeros(T, low_size..., batch))
     return PhaseBuffers(kl, interpolator, low_array, r₀_px^(-5//6))
 end
@@ -307,7 +310,7 @@ device_eigen(::Any) = false
 MultiThreaded(adapter, nthreads::Int=1) = ComputeBackend(adapter, nthreads, false)
 MultiThreaded(nthreads::Int=Threads.nthreads()) = ComputeBackend(identity, nthreads, false)
 
-function _harding_spec(final_size::NTuple{2,Int}; nsteps=0, size_from=nothing, size_heuristics=1024)
+function _harding_spec(final_size::NTuple{2,Int}; nsteps=:auto, size_from=nothing, size_heuristics=1024)
     interp_sizes = Tuple{Int,Int}[]
     if size_from !== nothing
         any(size_from .≤ 11) &&
@@ -326,13 +329,12 @@ function _harding_spec(final_size::NTuple{2,Int}; nsteps=0, size_from=nothing, s
         size_from = cld.(final_size .- 11, 2^nsteps) .+ 11
         return _harding_spec(final_size; size_from)
     elseif nsteps === :auto
+        size_heuristics = max(size_heuristics, 256)
         size_from = final_size
-        pushfirst!(interp_sizes, size_from)
-        while prod(size_from) .> size_heuristics
+        while prod(size_from) > size_heuristics
             size_from = cld.(size_from .- 11, 2) .+ 11
-            pushfirst!(interp_sizes, size_from)
         end
-        return interp_sizes
+        return _harding_spec(final_size; size_from)
     else
         throw(ArgumentError("`nsteps` must be a Number or :auto"))
     end
@@ -362,33 +364,31 @@ Holds scratch buffers only — the caller owns both the input and the output; se
   in the low-res grid. Tweak this based on the capability of your hardware to compute `eigen`
   of a `N×N` matrix, where `N` is the number of pixels in the low-res grid.
 """
-struct HardingInterpolator{WT,CT,RT}
+struct HardingInterpolator{WT,CT}
+    size_to::NTuple{2,Int}
     stage_sizes::Vector{NTuple{2,Int}}
     work_bufs::Vector{WT}
     chunk_ranges::Vector{CT}
 end
-function HardingInterpolator(::Type{T}, size_to::Tuple, batch::Int,
+function HardingInterpolator(::Type{T}, size_to::NTuple{2,Int}, batch::Int,
         adapter::ComputeBackend=ComputeBackend(); kw...) where T
-    stage_sizes = _harding_spec(size_to, kw...)
+    stage_sizes = _harding_spec(size_to; kw...)
     low_size = first(stage_sizes)
     any(low_size .≤ 11) && throw(ArgumentError("Dimensions must be greater than 11"))
-    nst = length(stage_sizes) - 1
-    nst > 0 || throw(ArgumentError(
-        "HardingInterpolator needs at least one pass, got nsteps = $nst"))
     nbufs = min(adapter.nthreads, batch)
     chunk_ranges = collect(chunks(1:batch; n=nbufs))
     work_bufs = map(chunk_ranges) do chunk_range
         map(2:length(stage_sizes)) do j
-            adapt_storage(adapter, zeros(T, stage_sizes[j]..., length(chunk_range)))
+            adapt_storage(adapter, zeros(T, (stage_sizes[j] .+ 10)..., length(chunk_range)))
         end
     end
-    return HardingInterpolator(stage_sizes, work_bufs, chunk_ranges)
+    return HardingInterpolator(size_to, stage_sizes, work_bufs, chunk_ranges)
 end
 HardingInterpolator(::Type{T}, size_to::NTuple{2,Int}, batch::Int, adapter; kw...) where T =
     HardingInterpolator(T, size_to, batch, ComputeBackend(adapter); kw...)
 HardingInterpolator(size_to::NTuple{2,Int}, batch::Int, adapter=ComputeBackend(); kw...) =
     HardingInterpolator(Float64, size_to, batch, adapter; kw...)
-plate_size(hi::HardingInterpolator) = last(hi.stage_sizes)
+plate_size(hi::HardingInterpolator) = hi.size_to
 batch_length(hi::HardingInterpolator) = sum(length, hi.chunk_ranges)
 nstages(hi::HardingInterpolator) = length(hi.stage_sizes) - 1
 
@@ -461,17 +461,22 @@ function SavedPhases(dataset, d::Union{Number,Nothing}=nothing;
 end
 
 """
-    SavedPhaseReader(bd::BufferedDataset, crop_indices, batch_idx=1)
+    SavedPhaseReader(bd::BufferedDataset, crop_indices, batch[, batch_idx=1])
 
-Replay consecutive batches of phase screens from a dataset, cropping each frame to
+Replay consecutive batches of `batch` phase screens from a dataset, cropping each frame to
 `crop_indices`. Stateful: every [`samplephases!`](@ref) call advances to the next batch.
 """
 mutable struct SavedPhaseReader{BDT, CT}
     bd::BDT
     crop_indices::CT
+    batch::Int
     batch_idx::Int
 end
-SavedPhaseReader(bd, crop_indices) = SavedPhaseReader(bd, crop_indices, 1)
+SavedPhaseReader(bd, crop_indices, batch::Int) = SavedPhaseReader(bd, crop_indices, batch, 1)
+plate_size(reader::SavedPhaseReader) = length.(reader.crop_indices)
+batch_length(reader::SavedPhaseReader) = reader.batch
+allocate_phases(reader::SavedPhaseReader) =
+    similar(reader.bd.dataset, (plate_size(reader)..., batch_length(reader)))
 
 """
     samplephases!(out, reader::SavedPhaseReader[, α])
@@ -498,9 +503,8 @@ function prepare_phasebuffers(spec::SavedPhases{T}, plate_size::NTuple{2,Int},
         "Saved phase dataset has plate size $saved_plate_size, but at least $plate_size was requested."
     ))
     crop_indices = (1:plate_size[1], 1:plate_size[2])
-    reader = SavedPhaseReader(BufferedDataset(spec.dataset, batch), crop_indices)
-    out_array = adapt_storage(deviceadapter, zeros(T, (plate_size..., batch)))
-    return PhaseBuffers(reader, nothing, nothing, out_array, true)
+    reader = SavedPhaseReader(BufferedDataset(spec.dataset, batch), crop_indices, batch)
+    return PhaseBuffers(reader, nothing, nothing, true)
 end
 
 # Shared by `PhaseBuffers` and `simulate_phases`.
@@ -517,12 +521,11 @@ end
 """
     PhaseBuffers(atm_spec::AtmosphereSpec, plate_size[, d]; grid_step, batch, deviceadapter)
 
-Everything needed to draw batches of phase screens, and the only object in the phase pipeline that
-owns an output array.
+Everything needed to draw batches of phase screens. Owns no output array — allocate one with
+[`allocate_phases`](@ref) and pass it to [`samplephases!`](@ref).
 
 Groups a sampler ([`KarhunenLoeveSampler`](@ref) or [`SavedPhaseReader`](@ref)), an optional
-[`HardingInterpolator`](@ref) with its low-resolution intermediate, the output array, and the
-``r_0`` scale factor. Call [`samplephases!`](@ref) to fill it.
+[`HardingInterpolator`](@ref) with its low-resolution intermediate, and the ``r_0`` scale factor.
 
 # Arguments
 - `atm_spec`: an `AtmosphereSpec` describing the turbulence.
@@ -534,7 +537,7 @@ Groups a sampler ([`KarhunenLoeveSampler`](@ref) or [`SavedPhaseReader`](@ref)),
 - `batch`: screens per `samplephases!` call (default `$DEFAULT_BATCH`).
 - `deviceadapter`: storage adapter or [`ComputeBackend`](@ref) for the buffers.
 """
-struct PhaseBuffers{ST, IT, LT, AT, FT}
+struct PhaseBuffers{ST, IT, LT, FT}
     sampler::ST
     interpolator::IT
     low_array::LT
@@ -565,3 +568,15 @@ function samplephases!(out, pb::PhaseBuffers)
         harding_interpolate!(out, pb.interpolator, pb.low_array, 1, pb.phase_scale)
     end
 end
+
+"""
+    allocate_phases(pb::PhaseBuffers[, deviceadapter])
+
+Allocate a fresh `(plate_size(pb)..., batch_length(pb))` array to draw into. `PhaseBuffers` does
+not own an output buffer, so the caller allocates — see [`samplephases!`](@ref).
+"""
+allocate_phases(pb::PhaseBuffers) =
+    isnothing(pb.interpolator) || nstages(pb.interpolator) == 0 ?
+        similar(allocate_phases(pb.sampler), (plate_size(pb)..., batch_length(pb))) :
+        similar(pb.interpolator.work_bufs[1][1], (plate_size(pb)..., batch_length(pb)))
+samplephases(phs_sampler) = samplephases!(allocate_phases(phs_sampler), phs_sampler)

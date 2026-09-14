@@ -3,7 +3,7 @@ Random.seed!(20260716)
 
 const NGRID = 64
 
-atm = SingleLayer(0.2; interpolate=:auto)
+atm = SingleLayer(0.2)
 aperture = CircularAperture((NGRID, NGRID))
 img_spec = ImagingSpec(aperture, 2.0, PhotonCount(Inf); filter=FilterSpec(500nm))
 wf, img = dropdims.(Tuple(simulate_images(atm, img_spec; n=1, verbose=false)), dims=3)

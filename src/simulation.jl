@@ -1,9 +1,9 @@
-function simulation_run!!(img_bd::BufferedDataset, phs_bd::BufferedDataset,
+function simulation_run!!(img_bd::BufferedDataset, phs_bd::BufferedDataset, phases,
         phase_buffers::PhaseBuffers, image_buffers, true_sky_adapt, n; verbose=true)
     batch = batch_length(phase_buffers)
     p = Progress(n, desc="Simulating images", enabled=verbose, dt=1)
     for j in 1:cld(n, batch)
-        phases = samplephases!(phase_buffers)
+        samplephases!(phases, phase_buffers)
         if image_buffers !== nothing
             images = compute_images!(image_buffers, phases, true_sky_adapt)
             write_batch!(img_bd, j, images)
@@ -14,7 +14,7 @@ function simulation_run!!(img_bd::BufferedDataset, phs_bd::BufferedDataset,
     finish!(p)
 end
 
-function simulation_run(file, phsbuffers::PhaseBuffers, imgbuffers, true_sky_adapt, n;
+function simulation_run(file, phsbuffers::PhaseBuffers, phases, imgbuffers, true_sky_adapt, n;
             verbose=true, savephases::Bool=true)
     open_file(file) do fid
         batch = batch_length(phsbuffers)
@@ -28,11 +28,11 @@ function simulation_run(file, phsbuffers::PhaseBuffers, imgbuffers, true_sky_ada
         if savephases
             phs_size = plate_size(phsbuffers)
             phs_bd =
-                prepare_dataset(fid, "phases", phase_type(phsbuffers), phs_size, n, batch)
+                prepare_dataset(fid, "phases", eltype(phases), phs_size, n, batch)
         else
             phs_bd = BufferedDataset(nothing)
         end
-        simulation_run!!(img_bd, phs_bd, phsbuffers, imgbuffers, true_sky_adapt, n;
+        simulation_run!!(img_bd, phs_bd, phases, phsbuffers, imgbuffers, true_sky_adapt, n;
             verbose=verbose)
         _data(x) = x.dataset isa Array ? x.dataset : nothing
         if imgbuffers === nothing
@@ -77,7 +77,8 @@ function simulate_phases(atm_spec::AtmosphereSpec, plate_size, d=nothing; n::Int
     batch = min(batch, n)
     phase_buffers = PhaseBuffers(atm_spec, plate_size, d;
         grid_step=grid_step, batch=batch, deviceadapter=deviceadapter)
-    simulation_run(file, phase_buffers, nothing, nothing, n; verbose=verbose)
+    simulation_run(file, phase_buffers, allocate_phases(phase_buffers), nothing, nothing, n;
+        verbose=verbose)
 end
 
 """
@@ -119,8 +120,8 @@ function simulate_images(::Type{T}, true_sky::TrueSky, atm_spec::AtmosphereSpec,
     batch = min(batch, n)
     true_sky_adapt = adapt(deviceadapter, true_sky)
     phase_buffers, image_buffers = prepare_buffers(T, atm_spec, img_spec, batch, deviceadapter)
-    simulation_run(file, phase_buffers, image_buffers, true_sky_adapt, n;
-        verbose=verbose, savephases=savephases)
+    simulation_run(file, phase_buffers, allocate_phases(phase_buffers), image_buffers,
+        true_sky_adapt, n; verbose=verbose, savephases=savephases)
 end
 simulate_images(::Type{T}, atm_spec::AtmosphereSpec, img_spec::ImagingSpec; kwargs...) where {T} =
     simulate_images(T, PointSource(), atm_spec, img_spec; kwargs...)
