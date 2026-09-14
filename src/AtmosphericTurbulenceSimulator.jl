@@ -12,12 +12,9 @@ export HDF5File
 include("atmosphere.jl")
 export kolmogorov_covmat, SingleLayer, SavedPhases, ComputeBackend, MultiThreaded
 # Low-level phase-generation API
-export phase_scale, scale_phases!, KarhunenLoeveSampler, HardingSpec, HardingInterpolator,
-    harding_upsample!, harding_interpolate!, SavedPhaseReader, PhaseBuffers,
-    prepare_phasebuffers, samplephases!
-@static if VERSION >= v"1.11"
-    eval(Meta.parse("public plate_size, batch_length, phase_type"))
-end
+export scale_phases!, KarhunenLoeveSampler, HardingInterpolator,
+    harding_upsample!, harding_interpolate!, SavedPhaseReader, PhaseBuffers, samplephases!
+
 include("imaging.jl")
 export FilterSpec, ImagingSpec, PhotonCount, Exposure, PointSource, DoubleSystem, TrueSkyImage,
     CircularAperture
