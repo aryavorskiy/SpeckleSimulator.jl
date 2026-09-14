@@ -24,15 +24,15 @@ term is excluded in this model.
 - `size`: a tuple `(nx, ny)` specifying the size of the aperture function.
 - `r₀_px`: Fried parameter (``r_0``) in pixel units (default `1.0`).
 """
-function kolmogorov_covmat(W::AbstractMatrix, r₀::Number=one(eltype(W)))
+function kolmogorov_covmat(W::AbstractMatrix, r₀_px::Number=one(eltype(W)))
     I = eachindex(IndexCartesian(), W)
-    C = similar(W, float(typeof(r₀)), length(I), length(I))
+    C = similar(W, float(typeof(r₀_px)), length(I), length(I))
     for i in 1:length(I), j in 1:length(I)
         x = I[i][1] - I[j][1]
         y = I[i][2] - I[j][2]
-        C[i, j] = -0.5 * 6.88 * ((x^2 + y^2) / r₀^2)^(5/6)
+        C[i, j] = -0.5 * 6.88 * ((x^2 + y^2) / r₀_px^2)^(5/6)
     end
-    Wp = oftype.(float(r₀), W ./ sum(W))
+    Wp = oftype.(float(r₀_px), W ./ sum(W))
     Cp = vec(sum(C .* vec(Wp)', dims=2))
     Cc = sum(Cp .* vec(Wp))
     return C .- (Cp .+ Cp') .+ Cc
@@ -96,6 +96,8 @@ function KarhunenLoeveSampler(sz::NTuple{2,Int}, (E, U)::EigenType, batch::Int)
 end
 KarhunenLoeveSampler(sz::NTuple{2,Int}, covmat::AbstractMatrix, batch::Int) =
     KarhunenLoeveSampler(sz, eigen(Symmetric(covmat)), batch)
+plate_size(sampler::KarhunenLoeveSampler) = sampler.shape
+batch_length(sampler::KarhunenLoeveSampler) = size(sampler.noise_buffer, 2)
 
 """
     samplephases!(out, sampler::KarhunenLoeveSampler[, α, β])
@@ -145,7 +147,7 @@ struct SingleLayer{T<:Number,T2<:Number,T3<:Number,KT} <: AtmosphereSpec{T}
 end
 function SingleLayer(r0::Number; base_wavelength=DEFAULT_WAVELEN, wind_velocity=(0, 0), harding=(;))
     wl = _as_wavelength(base_wavelength)
-    SingleLayer(float(r0), convert_numtype(numtype(float(r0)), wl), wind_velocity, kw)
+    SingleLayer(float(r0), convert_numtype(numtype(float(r0)), wl), wind_velocity, harding)
 end
 SingleLayer(::Type{T}, r0::Number; kw...) where T = SingleLayer(convert_numtype(T, r0); kw...)
 function prepare_phasebuffers(spec::SingleLayer, plate_size::NTuple{2,Int}, grid_step::Number,
@@ -163,11 +165,9 @@ function prepare_phasebuffers(spec::SingleLayer, plate_size::NTuple{2,Int}, grid
         U = adapt_storage(deviceadapter, U_host)
     end
     kl = KarhunenLoeveSampler(low_size, (E, U), batch)
-    r₀_px = convert(T, Number(spec.r₀ / grid_step))
-    out_array = adapt_storage(deviceadapter, zeros(T, plate_size..., batch))
-    harding.nsteps == 0 && return PhaseBuffers(kl, nothing, nothing, out_array, r₀_px)
+    r₀_px = convert(T, NoUnits(spec.r₀ / grid_step))
     low_array = adapt_storage(deviceadapter, zeros(T, low_size..., batch))
-    return PhaseBuffers(kl, interpolator, low_array, out_array, r₀_px^(-5//6))
+    return PhaseBuffers(kl, interpolator, low_array, r₀_px^(-5//6))
 end
 
 # One rung of the ladder: run every pass, then crop the padding and copy out, scaled by `α`.
@@ -311,7 +311,7 @@ function _harding_spec(final_size::NTuple{2,Int}; nsteps=0, size_from=nothing, s
     interp_sizes = Tuple{Int,Int}[]
     if size_from !== nothing
         any(size_from .≤ 11) &&
-            throw(ArgumentError("`interpolate_from` dimensions must be greater than 11."))
+            throw(ArgumentError("`size_from` dimensions must be greater than 11."))
         interpolated_size = size_from
         push!(interp_sizes, interpolated_size)
         n = 0
@@ -324,17 +324,17 @@ function _harding_spec(final_size::NTuple{2,Int}; nsteps=0, size_from=nothing, s
     elseif nsteps isa Number
         nsteps < 0 && throw(ArgumentError("`nsteps` must be nonnegative."))
         size_from = cld.(final_size .- 11, 2^nsteps) .+ 11
-        return _harding_spec(final_size, interpolate_from=size_from)
+        return _harding_spec(final_size; size_from)
     elseif nsteps === :auto
         size_from = final_size
         pushfirst!(interp_sizes, size_from)
         while prod(size_from) .> size_heuristics
-            size_from = cld.(final_size .- 11, 2^n) .+ 11
+            size_from = cld.(size_from .- 11, 2) .+ 11
             pushfirst!(interp_sizes, size_from)
         end
         return interp_sizes
     else
-        throw(ArgumentError("`interpolate` must be a Number or :auto"))
+        throw(ArgumentError("`nsteps` must be a Number or :auto"))
     end
 end
 """
@@ -390,7 +390,7 @@ HardingInterpolator(size_to::NTuple{2,Int}, batch::Int, adapter=ComputeBackend()
     HardingInterpolator(Float64, size_to, batch, adapter; kw...)
 plate_size(hi::HardingInterpolator) = last(hi.stage_sizes)
 batch_length(hi::HardingInterpolator) = sum(length, hi.chunk_ranges)
-nstages(hi::HardingInterpolator) = length(hi.work_bufs)
+nstages(hi::HardingInterpolator) = length(hi.stage_sizes) - 1
 
 """
     harding_interpolate!(out, hi::HardingInterpolator, low[, r₀_px=1, α, β])
@@ -545,8 +545,12 @@ PhaseBuffers(atm_spec::AtmosphereSpec, plate_size::NTuple{2,Int}, d=nothing;
     prepare_phasebuffers(atm_spec, plate_size,
         _resolve_grid_step(atm_spec, plate_size, d, grid_step), batch, deviceadapter)
 
-plate_size(pb::PhaseBuffers) = size(pb.out_array)[1:2]
-batch_length(pb::PhaseBuffers) = size(pb.out_array, 3)
+plate_size(pb::PhaseBuffers) = if isnothing(pb.interpolator)
+    plate_size(pb.sampler)
+else
+    plate_size(pb.interpolator)
+end
+batch_length(pb::PhaseBuffers) = batch_length(pb.sampler)
 
 """
     samplephases!(out, pb::PhaseBuffers)
@@ -558,6 +562,6 @@ function samplephases!(out, pb::PhaseBuffers)
         samplephases!(out, pb.sampler, pb.phase_scale)
     else
         samplephases!(pb.low_array, pb.sampler)
-        harding_interpolate!(out, pb.interpolator, pb.low_array, pb.phase_scale)
+        harding_interpolate!(out, pb.interpolator, pb.low_array, 1, pb.phase_scale)
     end
 end
