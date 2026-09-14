@@ -18,6 +18,10 @@ export scale_phases!, KarhunenLoeveSampler, HardingInterpolator,
 include("imaging.jl")
 export FilterSpec, ImagingSpec, PhotonCount, Exposure, PointSource, DoubleSystem, TrueSkyImage,
     CircularAperture
+# Low-level imaging API
+export FilterChannel, ImagingPlan, OpticalBuffers, ImageBuffers, allocate_images,
+    phases_to_pupil!, pupil_to_psf!, compute_psf!, apply_truesky!, readout!, compute_images!,
+    compute_images
 include("simulation.jl")
 export simulate_images, simulate_phases
 
