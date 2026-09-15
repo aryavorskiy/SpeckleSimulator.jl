@@ -111,7 +111,7 @@ Draw a batch of phase screens from the given Karhunen-Loeve decomposition.
   `sampler.shape` and its third dimension must match `sampler.noise_buffer`.
 - `sampler`: a `KarhunenLoeveSampler` instance.
 - `α` and `β`: optional scaling factors for the output. If provided, the result is computed as
-  ``out = α ⋅ new_phases + β ⋅ out``.
+  `out = α * new_phases + β * out`.
 """
 function samplephases!(out::AbstractArray{<:Any,3}, sampler::KarhunenLoeveSampler, α=true, β=false)
     size(out)[1:2] != sampler.shape &&

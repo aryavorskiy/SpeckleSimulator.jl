@@ -57,40 +57,53 @@ struct BilinearInterpolator{IT,VT}
     ty::VT
     can_ff::Bool
 end
-function BilinearScale(to::AbstractArray, scale::Real)
-    nx, ny = size(to)
+function BilinearScale(to::AbstractArray, scale::Real, sz=(size(to, 1), size(to, 2)))
+    nx, ny = sz
     sx = range((1 - nx ÷ 2) / scale + nx ÷ 2 + 1, step=1/scale, length=nx)
     sy = range((1 - ny ÷ 2) / scale + ny ÷ 2 + 1, step=1/scale, length=ny)
     ix = copy!(similar(to, Int, nx), clamp.(floor.(Int, sx), 1, nx))
     iy = copy!(similar(to, Int, ny), clamp.(floor.(Int, sy), 1, ny))
     ixp1 = copy!(similar(to, Int, nx), clamp.(ceil.(Int, sx), 1, nx))
     iyp1 = copy!(similar(to, Int, ny), clamp.(ceil.(Int, sy), 1, ny))
-    tx = oftype(vec(to), sx) .- ix
-    ty = oftype(vec(to), sy) .- iy
+    tx = real(oftype(vec(to), sx) .- ix)
+    ty = real(oftype(vec(to), sy) .- iy)
     return BilinearInterpolator(ix, iy, ixp1, iyp1, tx, ty, scale≈1)
 end
-function BilinearShift(to::AbstractArray, offset::NTuple{2})
-    nx, ny = size(to)
+function BilinearShift(to::AbstractArray, offset::NTuple{2}, sz=(size(to, 1), size(to, 2)))
+    nx, ny = sz
     ix = range(floor(Int, 1 + offset[1]), length=nx)
     iy = range(floor(Int, 1 + offset[2]), length=ny)
     ixp1 = range(ceil(Int, 1 + offset[1]), length=nx)
     iyp1 = range(ceil(Int, 1 + offset[2]), length=ny)
-    tx = convert(eltype(to), offset[1] - floor(offset[1]))
-    ty = convert(eltype(to), offset[2] - floor(offset[2]))
+    tx = convert(real(eltype(to)), offset[1] - floor(offset[1]))
+    ty = convert(real(eltype(to)), offset[2] - floor(offset[2]))
     return BilinearInterpolator(ix, iy, ixp1, iyp1, tx, ty, all(isinteger, offset))
 end
-function interpolate_mapmuladd!(to::AbstractArray, from::AbstractArray, interp::BilinearInterpolator,
-        factor, g=identity, h=identity)
+"""
+    bilinear_interpolate!(to, from, interp[, α, β, g, h])
+
+Performs bilinear interpolation of `from` onto `to` using the precomputed `interp` indices and weights.
+
+# Arguments
+- `to`: output array to be filled with interpolated values.
+- `from`: input array to be interpolated.
+- `interp`: a `BilinearInterpolator` object containing precomputed indices and weights.
+- `α` and `β`: oprtional scaling factors for the output. If provided, the output is computed
+  as `to = α * interpolate(from) + β * to`. Can be scalar or array of the same size as `to`.
+- `g` and `h`: optional functions applied to the input after and before interpolation, respectively.
+"""
+function bilinear_interpolate!(to::AbstractArray, from::AbstractArray, interp::BilinearInterpolator,
+        α=true, β=false, g=identity, h=identity)
     tx = interp.tx
     ty = transpose(interp.ty)
     if interp.can_ff
-        @views @inbounds @. to += factor * g(h(from[interp.ix, interp.iy, :]))
+        @views @inbounds @. to = α * g(h(from[interp.ix, interp.iy, :])) + β * to
     else
-        @views @inbounds @. to += factor * g(
+        @views @inbounds @. to = α * g(
             (1 - tx) * (1 - ty) * h(from[interp.ix, interp.iy, :]) +
             tx * (1 - ty) * h(from[interp.ixp1, interp.iy, :]) +
             (1 - tx) * ty * h(from[interp.ix, interp.iyp1, :]) +
-            tx * ty * h(from[interp.ixp1, interp.iyp1, :]))
+            tx * ty * h(from[interp.ixp1, interp.iyp1, :])) + β * to
     end
     return to
 end
@@ -294,14 +307,6 @@ adapt_structure(to, plan::ImagingPlan) = ImagingPlan(adapt(to, plan.spec),
     plan.base_wavelength, plan.offsets, plan.psf_norm)
 image_size(plan::ImagingPlan) = image_size(plan.spec)
 plate_size(plan::ImagingPlan) = plate_size(plan.spec)
-"""
-    phs_factors(plan::ImagingPlan)
-
-Per-wavelength phase scaling ``λ_w / λ_{base}``. Derived rather than stored -- each
-value is carried by the [`FilterChannel`](@ref) it generates.
-"""
-phs_factors(plan::ImagingPlan) =
-    NoUnits.(plan.spec.filter_spec.wavelengths ./ plan.base_wavelength)
 
 """
     FilterChannel(interpolator, phs_factor, weight)
@@ -312,11 +317,13 @@ the plate-scale `interpolator` ([`BilinearScale`](@ref)), the phase scaling `phs
 all three come from the same wavelength -- keeping them apart meant recomputing the weight in the
 innermost loop.
 """
-struct FilterChannel{IT, T}
+struct FilterChannel{IT<:BilinearInterpolator, T}
     interpolator::IT
     phs_factor::T
     weight::T
 end
+FilterChannel(aperture::AbstractArray, lambda_rel, inten, imgsize = (size(aperture, 1), size(aperture, 2))) =
+    FilterChannel(BilinearScale(aperture, lambda_rel, imgsize), 1 / lambda_rel, inten / lambda_rel^2)
 
 """
     OpticalBuffers(plan::ImagingPlan, batch)
@@ -336,50 +343,47 @@ end
 image_size(bufs::OpticalBuffers) = size(bufs.pupil_buffer)[1:2]
 batch_length(bufs::OpticalBuffers) = size(bufs.pupil_buffer, 3)
 
+OpticalBuffers(pupil_buffer, channels) =
+    OpticalBuffers(pupil_buffer, similar(pupil_buffer), plan_fft(pupil_buffer, (1, 2)), channels)
 function OpticalBuffers(plan::ImagingPlan, batch::Int)
     spec = plan.spec
     NT = eltype(spec.aperture)
     pupil_buffer = similar(spec.aperture, complex(NT), spec.img_size..., batch)
-    focal_buffer = similar(pupil_buffer)
-    # BilinearScale reads only `size(to)[1:2]` and the storage type, so a 2-D template is enough
-    # -- no need for a full psf-sized array just to build the index/weight vectors.
-    psf_template = similar(spec.aperture, NT, spec.img_size)
-    factors = phs_factors(plan)
+    factors = NoUnits.(plan.spec.filter_spec.wavelengths ./ plan.base_wavelength)
     channels = map(eachindex(factors)) do w
-        f = convert(NT, factors[w])
-        FilterChannel(BilinearScale(psf_template, f), f,
-            convert(NT, spec.filter_spec.intensities[w]) / f^2)
+        fact = convert(NT, factors[w])
+        FilterChannel(pupil_buffer, fact, convert(NT, spec.filter_spec.intensities[w]))
     end
-    return OpticalBuffers(pupil_buffer, focal_buffer, plan_fft(pupil_buffer, (1, 2)), channels)
+    return OpticalBuffers(pupil_buffer, channels)
 end
 
 """
     phases_to_pupil!(pupil, phases, aperture, offset, phs_factor)
 
-Write the complex pupil field `aperture * cis(phase / phs_factor)` into `pupil`, zero-padded to
+Write the complex pupil field `aperture * cis(phase * phs_factor)` into `pupil`, zero-padded to
 the image grid and sampled at the wind `offset`.
 """
-function phases_to_pupil!(pupil, phases, aperture, offset, phs_factor)
+function phases_to_pupil!(pupil::AbstractArray, phases, aperture, offset::Tuple=(0, 0), phs_factor=true)
     M, N = size(aperture)
     Cx, Cy = size(pupil) .÷ 2
     fill!(pupil, 0)
     ap_slice = @view pupil[Cx - M ÷ 2 + 1:Cx - M ÷ 2 + M, Cy - N ÷ 2 + 1:Cy - N ÷ 2 + N, :]
-    interpolate_mapmuladd!(ap_slice, phases, offset, aperture, cis, Base.Fix2(/, phs_factor))
+    bilinear_interpolate!(ap_slice, phases, BilinearShift(aperture, offset), aperture, true,
+        cis, Base.Fix2(*, phs_factor))
     return pupil
 end
-phases_to_pupil!(bufs::OpticalBuffers, phases, aperture, offset, phs_factor) =
-    phases_to_pupil!(bufs.pupil_buffer, phases, aperture, offset, phs_factor)
+phases_to_pupil!(buf::OpticalBuffers, args...) = phases_to_pupil!(buf.pupil_buffer, args...)
 
 """
-    pupil_to_psf!(psf, bufs::OpticalBuffers, ch::FilterChannel[, α])
+    pupil_to_psf!(psf, bufs::OpticalBuffers, ch::FilterChannel[, α, β])
 
 Propagate the pupil field currently in `bufs` to the focal plane and **accumulate** its intensity
 into `psf`, rescaled to `ch`'s plate scale and weighted by `α * ch.weight`. Does not zero `psf`.
 """
-function pupil_to_psf!(psf, bufs::OpticalBuffers, ch::FilterChannel, α=true)
+function pupil_to_psf!(psf, bufs::OpticalBuffers, ch::FilterChannel, α=true, β=false)
     mul!(bufs.focal_buffer, bufs.fftplan, bufs.pupil_buffer)
     fftshift!(bufs.pupil_buffer, bufs.focal_buffer, (1, 2))
-    interpolate_mapmuladd!(psf, bufs.pupil_buffer, ch.interpolator, α * ch.weight, identity, abs2)
+    bilinear_interpolate!(psf, bufs.pupil_buffer, ch.interpolator, α * ch.weight, β, identity, abs2)
     return psf
 end
 
@@ -387,28 +391,26 @@ end
     compute_psf!(psf, bufs::OpticalBuffers, plan::ImagingPlan, phases[, α, β])
 
 Accumulate the (unnormalised) point-spread function over every exposure offset and wavelength:
-``psf = α ⋅ PSF(phases) + β ⋅ psf``. Divide by `plan.psf_norm` for a flux-normalised PSF, or hand
+`psf = α * PSF(phases) + β * psf`. Divide by `plan.psf_norm` for a flux-normalised PSF, or hand
 it to [`readout!`](@ref).
 """
 function compute_psf!(psf, bufs::OpticalBuffers, plan::ImagingPlan, phases, α=true, β=false)
-    if iszero(β)
-        fill!(psf, 0)
-    elseif !isone(β)
-        psf .*= β
-    end
+    firstiter = true
     for offset in plan.offsets, ch in bufs.channels
         phases_to_pupil!(bufs, phases, plan.spec.aperture, offset, ch.phs_factor)
-        pupil_to_psf!(psf, bufs, ch, α)
+        pupil_to_psf!(psf, bufs, ch, α, firstiter ? β : one(β))
+        firstiter = false
     end
     return psf
 end
 
 """
-    apply_truesky!(psf, bufs::OpticalBuffers, true_sky)
+    apply_truesky!(psf, true_sky[, bufs::OpticalBuffers])
 
 Convolve `psf` in place with a [`TrueSky`](@ref) brightness model, using `bufs` as scratch.
 """
-function apply_truesky!(psf, opt_buffer::OpticalBuffers, ts::TrueSkyImage)
+function apply_truesky!(psf, ts::TrueSkyImage, opt_buffer::OpticalBuffers=
+        OpticalBuffers(similar(psf, complex(eltype(psf))), []))
     copyto!(opt_buffer.pupil_buffer, psf)
     mul!(opt_buffer.focal_buffer, opt_buffer.fftplan, opt_buffer.pupil_buffer)
     opt_buffer.focal_buffer .*= ts.true_sky_fft
@@ -416,7 +418,7 @@ function apply_truesky!(psf, opt_buffer::OpticalBuffers, ts::TrueSkyImage)
     psf .= real.(opt_buffer.pupil_buffer)
     return psf
 end
-function apply_truesky!(psf, ::OpticalBuffers, ds::DoubleSystem)
+function apply_truesky!(psf, ds::DoubleSystem)
     img = psf
     @assert all(abs.(ds.rel_position) .< size(psf)[1:2] .÷ 2)
     o1, o2 = ds.rel_position
@@ -426,7 +428,8 @@ function apply_truesky!(psf, ::OpticalBuffers, ds::DoubleSystem)
     img ./= (1 + ds.intensity)
     return psf
 end
-apply_truesky!(psf, ::OpticalBuffers, ::PointSource) = psf
+apply_truesky!(psf, ::PointSource) = psf
+apply_truesky!(psf, ts, ::OpticalBuffers) = apply_truesky!(psf, ts)
 
 const GAUSSIAN_POISSON_CUTOFF = 10
 const KNUTH_MAXITER = round(Int, GAUSSIAN_POISSON_CUTOFF + 5 * sqrt(GAUSSIAN_POISSON_CUTOFF))
@@ -455,7 +458,7 @@ function readout!(dst::AbstractArray{T}, img::AbstractArray, pc::PhotonCount{GA}
 end
 function compute_images!(img, psf, bufs::OpticalBuffers, plan::ImagingPlan, phases, true_sky)
     compute_psf!(psf, bufs, plan, phases)
-    apply_truesky!(psf, bufs, true_sky)
+    apply_truesky!(psf, true_sky, bufs)
     readout!(img, psf, plan.spec.photon_count, plan.psf_norm)
 end
 
@@ -508,7 +511,7 @@ function long_exp_offsets(atm_spec::AtmosphereSpec, img_spec::ImagingSpec)
         offset_list = [round.(offset) for offset in offset_list]
     end
     mins = minimum(first, offset_list), minimum(last, offset_list)
-    return [BilinearShift(img_spec.aperture, offset .- mins) for offset in offset_list]
+    return [offset .- mins for offset in offset_list]
 end
 
 """
