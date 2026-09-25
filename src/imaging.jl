@@ -564,8 +564,9 @@ function compute_psf!(dst, bufs::ImageBuffers, phases, α=true, β=false)
     if length(bufs.opt_bufs) == 1
         compute_psf!(dst, bufs.opt_bufs[1], bufs.plan, phases, α, β)
     else
-        @views Threads.@threads for (buf, cr) in zip(bufs.opt_bufs, bufs.chunk_ranges)
-            compute_psf!(dst[:, :, cr], buf, bufs.plan, phases[:, :, cr], α, β)
+        @views Threads.@threads for j in eachindex(bufs.opt_bufs)
+            cr = bufs.chunk_ranges[j]
+            compute_psf!(dst[:, :, cr], bufs.opt_bufs[j], bufs.plan, phases[:, :, cr], α, β)
         end
     end
 end
@@ -577,10 +578,11 @@ Performs `apply_truesky!` in parallel over the batch dimension.
 """
 function apply_truesky!(dst, ts::TrueSky, bufs::ImageBuffers)
     if length(bufs.opt_bufs) == 1
-        apply_truesky!(dst, ts, bufs.opt_bufs[1])
+        apply_truesky!(dst, ts, only(bufs.opt_bufs))
     else
-        @views Threads.@threads for (buf, cr) in zip(bufs.opt_bufs, bufs.chunk_ranges)
-            apply_truesky!(dst[:, :, cr], ts, buf)
+        @views Threads.@threads for j in eachindex(bufs.opt_bufs)
+            cr = bufs.chunk_ranges[j]
+            apply_truesky!(dst[:, :, cr], ts, bufs.opt_bufs[j])
         end
     end
 end
