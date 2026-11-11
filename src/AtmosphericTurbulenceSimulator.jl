@@ -7,10 +7,12 @@ export m, cm, mm, μm, nm
 import Unitful: s, ms, μs, ns
 export s, ms, μs, ns
 
+include("utils.jl")
+export get_num_threads, set_num_threads
 include("io.jl")
 export HDF5File
 include("atmosphere.jl")
-export kolmogorov_covmat, SingleLayer, SavedPhases, ComputeBackend, MultiThreaded
+export kolmogorov_covmat, SingleLayer, SavedPhases
 # Low-level phase-generation API
 export scale_phases!, KarhunenLoeveSampler, HardingInterpolator,
     harding_upsample!, harding_interpolate!, SavedPhaseReader, PhaseBuffers, samplephases!

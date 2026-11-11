@@ -549,25 +549,20 @@ allocate_images(ib::ImageBuffers) =
     allocate_images(real(float(eltype(ib.plan.spec.aperture))), ib)
 
 function ImageBuffers(plan::ImagingPlan, batch::Int,
-        adapter::ComputeBackend=ComputeBackend())
-    nbufs = min(adapter.nthreads, batch)
-    chunk_ranges = collect(chunks(1:batch; n=nbufs))
+        adapter=identity)
+    chunk_ranges = collect(chunks(1:batch; n=get_num_threads()))
     plan_adapt = adapt(adapter, plan)
     opt_bufs = map(cr -> OpticalBuffers(plan_adapt, length(cr)), chunk_ranges)
     return ImageBuffers(opt_bufs, chunk_ranges, plan_adapt)
 end
-ImageBuffers(plan::ImagingPlan, batch::Int, adapter) =
-    ImageBuffers(plan, batch, ComputeBackend(adapter))
 ImageBuffers(spec::ImagingSpec, atm_spec::AtmosphereSpec, args...) =
     ImageBuffers(ImagingPlan(atm_spec, spec), args...)
 
-function prepare_buffers(atm_spec, img_spec::ImagingSpec, batch::Int, adapter::ComputeBackend)
+function prepare_buffers(atm_spec, img_spec::ImagingSpec, batch::Int, adapter)
     return prepare_phasebuffers(atm_spec, padded_plate_size(atm_spec, img_spec),
             img_spec.grid_step, batch, adapter),
         ImageBuffers(ImagingPlan(atm_spec, img_spec), batch, adapter)
 end
-prepare_buffers(atm_spec, img_spec::ImagingSpec, batch::Int, A) =
-    prepare_buffers(atm_spec, img_spec, batch, ComputeBackend(A))
 
 """
     compute_psf!(dst, bufs::ImageBuffers, phases[, α, β])

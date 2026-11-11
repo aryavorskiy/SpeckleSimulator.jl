@@ -275,41 +275,6 @@ function harding_upsample!(to, from, r₀_px::Number=1; rescale::Bool=true)
                 to[inds_even_x, inds_odd_y .+ 3, :] + to[inds_even_x, inds_odd_y .- 3, :])
 end
 
-"""
-    ComputeBackend([adapter; nthreads, device_eigen=true])
-
-Device adapter that enables multi-threaded phase generation and imaging on CPU.
-
-# Arguments
-- `adapter`: optional storage adapter for internal buffers.
-
-# Keyword Arguments
-- `nthreads`: number of threads to use (default: `Threads.nthreads()` if `adapter` is not
-    provided, otherwise 1).
-- `device_eigen`: whether the Karhunen-Loeve eigendecomposition is computed on device
-    (default `true`).
-"""
-struct ComputeBackend{AT}
-    adapter::AT
-    nthreads::Int
-    device_eigen::Bool
-    ComputeBackend(adapter, nthreads::Int, device_eigen::Bool) =
-        new{typeof(adapter)}(adapter, nthreads, device_eigen)
-    ComputeBackend(::Type{T}, nthreads::Int, device_eigen::Bool) where {T} =
-        new{Val{T}}(Val(T), nthreads, device_eigen)
-end
-ComputeBackend(adapter=identity;
-    nthreads::Int=adapter === identity ? Threads.nthreads() : 1,
-    device_eigen::Bool=true) =
-    ComputeBackend(adapter, nthreads, device_eigen)
-adapt_storage(am::ComputeBackend{AT}, x) where {AT} = adapt_storage(am.adapter, x)
-adapt_storage(::ComputeBackend{Val{AT}}, x) where {AT} = adapt_storage(AT, x)
-device_eigen(adapter::ComputeBackend) = adapter.device_eigen
-device_eigen(::Any) = false
-
-MultiThreaded(adapter, nthreads::Int=1) = ComputeBackend(adapter, nthreads, false)
-MultiThreaded(nthreads::Int=Threads.nthreads()) = ComputeBackend(identity, nthreads, false)
-
 function _harding_spec(final_size::NTuple{2,Int}; nsteps=:auto, size_from=nothing, size_heuristics=1024)
     interp_sizes = Tuple{Int,Int}[]
     if size_from !== nothing
@@ -352,8 +317,7 @@ Holds scratch buffers only — the caller owns both the input and the output; se
 - `T`: element type of the scratch buffers (default `Float64`).
 - `size_to`: the size of the output phase screens.
 - `batch`: number of screens interpolated per call.
-- `deviceadapter`: storage adapter or [`ComputeBackend`](@ref) for the scratch buffers. Its thread
-  count sets how many batch chunks are interpolated in parallel.
+- `deviceadapter`: storage adapter for the scratch buffers.
 
 # Keyword Arguments
 - `nsteps`: number of passes of Harding interpolation. If set to `:auto`, the number of passes
@@ -371,11 +335,11 @@ struct HardingInterpolator{WT,CT}
     chunk_ranges::Vector{CT}
 end
 function HardingInterpolator(::Type{T}, size_to::NTuple{2,Int}, batch::Int,
-        adapter::ComputeBackend=ComputeBackend(); kw...) where T
+        adapter=identity; kw...) where T
     stage_sizes = _harding_spec(size_to; kw...)
     low_size = first(stage_sizes)
     any(low_size .≤ 11) && throw(ArgumentError("Dimensions must be greater than 11"))
-    nbufs = min(adapter.nthreads, batch)
+    nbufs = get_num_threads()
     chunk_ranges = collect(chunks(1:batch; n=nbufs))
     work_bufs = map(chunk_ranges) do chunk_range
         map(2:length(stage_sizes)) do j
@@ -384,9 +348,7 @@ function HardingInterpolator(::Type{T}, size_to::NTuple{2,Int}, batch::Int,
     end
     return HardingInterpolator(size_to, stage_sizes, work_bufs, chunk_ranges)
 end
-HardingInterpolator(::Type{T}, size_to::NTuple{2,Int}, batch::Int, adapter; kw...) where T =
-    HardingInterpolator(T, size_to, batch, ComputeBackend(adapter); kw...)
-HardingInterpolator(size_to::NTuple{2,Int}, batch::Int, adapter=ComputeBackend(); kw...) =
+HardingInterpolator(size_to::NTuple{2,Int}, batch::Int, adapter=identity; kw...) =
     HardingInterpolator(Float64, size_to, batch, adapter; kw...)
 plate_size(hi::HardingInterpolator) = hi.size_to
 batch_length(hi::HardingInterpolator) = sum(length, hi.chunk_ranges)
@@ -535,7 +497,7 @@ Groups a sampler ([`KarhunenLoeveSampler`](@ref) or [`SavedPhaseReader`](@ref)),
 # Keyword Arguments
 - `grid_step`: physical size of one pixel; overrides the value derived from `d`.
 - `batch`: screens per `samplephases!` call (default `$DEFAULT_BATCH`).
-- `deviceadapter`: storage adapter or [`ComputeBackend`](@ref) for the buffers.
+- `deviceadapter`: storage adapter or for the buffers.
 """
 struct PhaseBuffers{ST, IT, LT, FT}
     sampler::ST
