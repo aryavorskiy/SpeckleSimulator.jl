@@ -60,7 +60,7 @@ function AtmosphericTurbulenceSimulator.speckle_viewer(::Type{T}=Float64;
 
     speckle_pattern = lift(wind_s, wl_s, bw_s, exp_s, phase_screen_scaled) do wind, wl, bw, exptime, phs
         atm = SavedPhases(phs, wind_velocity=(wind, zero(wind)))
-        img_spec = ImagingSpec(T, aperture, d, PhotonCount(Inf);
+        img_spec = ImagingSpec(T, aperture, d, ReadoutSpec(Inf);
             filter=FilterSpec(wl; bandwidth=bw, npts=iszero(bw) ? 0 : ceil(Int, NoUnits(bw / wl) * 20 + 3)),
             exposure=Exposure(exptime))
         out = simulate_images(atm, img_spec; n=1, verbose=false, savephases=false, deviceadapter=deviceadapter)

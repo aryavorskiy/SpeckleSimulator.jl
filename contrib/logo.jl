@@ -5,7 +5,7 @@ const NGRID = 64
 
 atm = SingleLayer(0.2)
 aperture = CircularAperture((NGRID, NGRID))
-img_spec = ImagingSpec(aperture, 2.0, PhotonCount(Inf); filter=FilterSpec(500nm))
+img_spec = ImagingSpec(aperture, 2.0, ReadoutSpec(Inf); filter=FilterSpec(500nm))
 wf, img = dropdims.(Tuple(simulate_images(atm, img_spec; n=1, verbose=false)), dims=3)
 
 # Crop to the brightest speckle grains

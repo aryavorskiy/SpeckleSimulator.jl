@@ -16,7 +16,7 @@ export scale_phases!, KarhunenLoeveSampler, HardingInterpolator,
     harding_upsample!, harding_interpolate!, SavedPhaseReader, PhaseBuffers, samplephases!
 
 include("imaging.jl")
-export FilterSpec, ImagingSpec, PhotonCount, Exposure, PointSource, DoubleSystem, TrueSkyImage,
+export FilterSpec, ImagingSpec, ReadoutSpec, Exposure, PointSource, DoubleSystem, TrueSkyImage,
     CircularAperture
 # Low-level imaging API
 export ImagingPlan, OpticalBuffers, ImageBuffers, BilinearInterpolator,

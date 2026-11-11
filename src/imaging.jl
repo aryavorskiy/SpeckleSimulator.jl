@@ -96,6 +96,7 @@ function bilinear_interpolate!(to::AbstractArray, from::AbstractArray, interp::B
         α=true, β=false, g=identity, h=identity)
     tx = interp.tx
     ty = transpose(interp.ty)
+
     if interp.can_ff
         @views @inbounds @. to = α * g(h(from[interp.ix, interp.iy, :])) + β * to
     else
@@ -109,36 +110,75 @@ function bilinear_interpolate!(to::AbstractArray, from::AbstractArray, interp::B
 end
 
 """
-    PhotonCount(nphotons[, background]; gaussian_approx=false)
+    ReadoutSpec(nphotons[, background, readout, bias, gain])
 
-Specifies the photon budget for imaging simulations. Set `nphotons` to `Inf` for
-continuous flux (`background` can be omitted in this case).
+Specifies the photon budget and readout process for imaging simulations.
 
-# Keyword Arguments
-- `gaussian_approx`: when true, Poisson noise is approximated by either a rounded Gaussian
-  or an exact sampler (for λ < 10, Knuth counting). Default `false` (exact everywhere via `Distributions`).
+# Arguments
+- `nphotons`: total expected number of photons in the image. Set to `Inf` for continuous flux
+  (no noise is applied and `background`, `readout`, `bias` and `gain` are ignored).
+- `background`: expected number of background photons per pixel. Can be omitted if `nphotons` is `Inf`;
+  required otherwise.
+- `readout`: standard deviation of the Gaussian readout noise, in photoelectrons (before `gain`).
+  Defaults to `0` (no readout noise).
+- `bias`: constant offset added to every pixel after applying `gain`. Defaults to `0`.
+- `gain`: multiplicative factor converting photoelectrons to output counts. Must be nonzero.
+  Defaults to `1`.
+
+Each pixel is computed as `gain * (Poisson(λ) + readout * randn()) + bias`, where
+`λ = nphotons * intensity + background`, and then rounded to the output type.
 """
-struct PhotonCount{GA,T<:Real}
+struct ReadoutSpec{T<:Real}
     nphotons::T
     background::T
-    PhotonCount{GA,T}(nphotons, background) where {GA,T<:Real} =
-        new{GA,T}(convert(T, nphotons), convert(T, background))
-    function PhotonCount{GA}(nphotons::T1, background::T2) where {T1<:Real,T2<:Real, GA}
-        return PhotonCount{GA,promote_type(T1, T2)}(nphotons, background)
-    end
+    readout::T
+    bias::T
+    gain::T
 end
-function PhotonCount(nph, bg=nothing; gaussian_approx=false)
+function ReadoutSpec(nph, bg=nothing, readout=0, bias=0, gain=1)
+    iszero(gain) && throw(ArgumentError("Zero gain is disallowed"))
     if isinf(nph)
-        PhotonCount{gaussian_approx}(nph, zero(nph))
+        promoted_args = promote(nph, zero(nph), readout, bias, gain)
     else
         isnothing(bg) && throw(ArgumentError("Must specify background when `nphotons` is finite"))
-        PhotonCount{gaussian_approx}(nph, bg)
+        promoted_args = promote(nph, bg, readout, bias, gain)
+    end
+    return ReadoutSpec{eltype(promoted_args)}(promoted_args...)
+end
+convert_numtype(::Type{T}, pc::ReadoutSpec) where {T} =
+    ReadoutSpec(convert.(T, (pc.nphotons, pc.background, pc.readout, pc.bias, pc.gain))...)
+isfinite_photons(pc::ReadoutSpec) = isfinite(pc.nphotons)
+
+const GAUSSIAN_POISSON_CUTOFF = 15
+const KNUTH_MAXITER = round(Int, GAUSSIAN_POISSON_CUTOFF + 5 * sqrt(GAUSSIAN_POISSON_CUTOFF))
+function _sample_poisson(::Type{T}, λ) where {T}
+    if λ < GAUSSIAN_POISSON_CUTOFF
+        # Knuth counting algorithm
+        L = exp(-λ)
+        k = 0
+        p = float(one(λ))
+        for _ in 1:KNUTH_MAXITER
+            p *= rand(float(typeof(λ)))
+            p <= L && break
+            k += 1
+        end
+        return convert(T, k)
+    end
+    i3sl = 1/3sqrt(λ)
+    return round(T, max(λ * (1 + i3sl * randn(typeof(λ)) - i3sl^2)^3, zero(λ)))
+end
+function readout!(dst::AbstractArray{T}, img::AbstractArray, pc::ReadoutSpec{FT}) where {T,FT}
+    if isfinite_photons(pc)
+        if iszero(pc.readout)
+            @. dst = round(T, _sample_poisson(T, real(img) * pc.nphotons + pc.background) * pc.gain + pc.bias)
+        else
+            @. dst = round(T, (_sample_poisson(T, real(img) * pc.nphotons + pc.background) +
+                    randn(FT) * pc.readout) * pc.gain + pc.bias)
+        end
+    else
+        @. dst = img
     end
 end
-convert_numtype(::Type{T}, pc::PhotonCount{GA}) where {T, GA} =
-    PhotonCount{GA}(convert(T, pc.nphotons), convert(T, pc.background))
-isfinite_photons(pc::PhotonCount) = isfinite(pc.nphotons)
-@inline gaussian_approx(::PhotonCount{GA}) where {GA} = GA
 
 struct Exposure{ET<:Number}
     exptime::ET
@@ -215,31 +255,31 @@ const FilterSpecType{T} = FilterSpec{<:Union{T, Quantity{T}}, <:Union{T, Quantit
     ImagingSpec
 
 Container for the imaging system configuration. It is defined by the telescope `aperture`, the
-source brightness via `photon_count`, an optional spectral `filter_spec`, the `exposure`,
+source brightness via `readout_spec`, an optional spectral `filter_spec`, the `exposure`,
 and the output `img_size`.
 If `img_size` does not match the aperture’s Nyquist grid, the aperture is zero-padded accordingly.
 """
-struct ImagingSpec{T, T2, GA, AT<:AbstractMatrix{T}, FST<:FilterSpec}
+struct ImagingSpec{T, T2, AT<:AbstractMatrix{T}, FST<:FilterSpec}
     aperture::AT
     grid_step::T2
-    photon_count::PhotonCount{GA,T}
+    readout_spec::ReadoutSpec{T}
     filter_spec::FST
     exposure::Exposure
     img_size::NTuple{2,Int}
     function ImagingSpec(
         aperture::AbstractMatrix{T},
         grid_step::Number,
-        photon_count::PhotonCount{GA,T},
+        readout_spec::ReadoutSpec{T},
         filter_spec::FilterSpecType{T},
         exposure::Exposure,
-        img_size::NTuple{2,Int}) where {T<:Real, GA}
-        new{T, typeof(grid_step), GA, typeof(aperture), typeof(filter_spec)}(
-            aperture, grid_step, photon_count, filter_spec, exposure, img_size)
+        img_size::NTuple{2,Int}) where {T<:Real}
+        new{T, typeof(grid_step), typeof(aperture), typeof(filter_spec)}(
+            aperture, grid_step, readout_spec, filter_spec, exposure, img_size)
     end
 end
 
 """
-    ImagingSpec([T, ]aperture, d, photon_count[; grid_step, filter, nyquist_oversample, img_size])
+    ImagingSpec([T, ]aperture, d, [readout_spec][; grid_step, filter, nyquist_oversample, img_size])
 
 Create an imaging system specification.
 
@@ -248,7 +288,7 @@ Create an imaging system specification.
 - `aperture`: 2D aperture (pupil) array describing the telescope pupil.
 - `d`: aperture diameter in the same units as ``r_0`` (e.g. `2m`). Used to compute `grid_step` as
   `d / maximum(size(aperture))`.
-- `photon_count`: `PhotonCount` instance describing the photon budget and background.
+- `readout_spec`: `ReadoutSpec` instance describing the readout. Default is no readout.
 
 # Keyword Arguments
 - `filter`: `FilterSpec` describing sampled wavelengths and their relative intensities.
@@ -260,12 +300,12 @@ Create an imaging system specification.
 - `img_size`: explicit output image size `(nx, ny)`. If not provided, computed from aperture size
   and `nyquist_oversample`.
 """
-function ImagingSpec(aperture::AbstractMatrix{T}, d::Number, photon_count::PhotonCount;
+function ImagingSpec(aperture::AbstractMatrix{T}, d::Number, readout_spec::ReadoutSpec=ReadoutSpec(Inf);
     filter::FilterSpec=FilterSpec(DEFAULT_WAVELEN),
     nyquist_oversample::Real=1, exposure::Union{Exposure,Number}=0,
     img_size::NTuple{2,Int}=round.(Int, size(aperture) .* 2 .* nyquist_oversample),
     grid_step::Number=d / maximum(size(aperture))) where T<:Real
-    pc = convert_numtype(T, photon_count)
+    pc = convert_numtype(T, readout_spec)
     ex = exposure isa Number ? Exposure(exposure) : exposure
     ft = FilterSpec(
         convert_numtype(T, filter.wavelengths), convert_numtype(T, filter.intensities))
@@ -276,7 +316,7 @@ ImagingSpec(::Type{T}, aperture::AbstractMatrix, args...; kw...) where T<:Real =
 
 adapt_structure(to, img_spec::ImagingSpec) =
     ImagingSpec(adapt_storage(to, img_spec.aperture), img_spec.grid_step,
-    img_spec.photon_count, img_spec.filter_spec, img_spec.exposure, img_spec.img_size)
+    img_spec.readout_spec, img_spec.filter_spec, img_spec.exposure, img_spec.img_size)
 plate_size(img_spec::ImagingSpec) = size(img_spec.aperture)
 image_size(img_spec::ImagingSpec) = img_spec.img_size
 psf_norm(img_spec::ImagingSpec) = sum(abs2, img_spec.aperture) * prod(img_spec.img_size) *
@@ -437,32 +477,6 @@ end
 apply_truesky!(psf, ::PointSource) = psf
 apply_truesky!(psf, ts, ::OpticalBuffers) = apply_truesky!(psf, ts)
 
-const GAUSSIAN_POISSON_CUTOFF = 10
-const KNUTH_MAXITER = round(Int, GAUSSIAN_POISSON_CUTOFF + 5 * sqrt(GAUSSIAN_POISSON_CUTOFF))
-function _sample_poisson(::Val{true}, ::Type{T}, λ) where {T}
-    if λ < GAUSSIAN_POISSON_CUTOFF
-        # Knuth counting algorithm
-        L = exp(-λ)
-        k = 0
-        p = one(λ)
-        for _ in 1:KNUTH_MAXITER
-            p *= rand(typeof(λ))
-            p <= L && break
-            k += 1
-        end
-        return convert(T, k)
-    end
-    return round(T, max(randn() * sqrt(λ) + λ, zero(λ)))
-end
-_sample_poisson(::Val{false}, ::Type{T}, λ) where {T} = convert(T, rand(Poisson(λ)))
-function readout!(dst::AbstractArray{T}, img::AbstractArray, pc::PhotonCount{GA}) where {T, GA}
-    if isfinite_photons(pc)
-        @. dst = _sample_poisson($(Val(GA)), T, real(img) * pc.nphotons + pc.background)
-    else
-        @. dst = img
-    end
-end
-
 """
     CircularAperture([T, ]sz, [radius; aa_dist=1])
 
@@ -552,7 +566,7 @@ function prepare_buffers(atm_spec, img_spec::ImagingSpec, batch::Int, adapter::C
             img_spec.grid_step, batch, adapter),
         ImageBuffers(ImagingPlan(atm_spec, img_spec), batch, adapter)
 end
-prepare_buffers(atm_spec, img_spec, batch, A) =
+prepare_buffers(atm_spec, img_spec::ImagingSpec, batch::Int, A) =
     prepare_buffers(atm_spec, img_spec, batch, ComputeBackend(A))
 
 """
@@ -588,11 +602,11 @@ function apply_truesky!(dst, ts::TrueSky, bufs::ImageBuffers)
 end
 
 """
-    readout!(dst, img, pc::PhotonCount, zchunks)
+    readout!(dst, img, pc::ReadoutSpec, zchunks)
 
 Performs `readout!` in parallel over the batch dimension.
 """
-function readout!(dst, img, pc::PhotonCount, zchunks)
+function readout!(dst, img, pc::ReadoutSpec, zchunks)
     if length(zchunks) == 1
         readout!(dst, img, pc)
     else
@@ -602,4 +616,4 @@ function readout!(dst, img, pc::PhotonCount, zchunks)
     end
 end
 readout!(dst, img, bufs::ImageBuffers) =
-    readout!(dst, img, bufs.plan.spec.photon_count, bufs.chunk_ranges)
+    readout!(dst, img, bufs.plan.spec.readout_spec, bufs.chunk_ranges)

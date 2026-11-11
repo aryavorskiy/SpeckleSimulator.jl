@@ -111,10 +111,10 @@ the results to an HDF5 file.
 
 # Arguments
 - `T`: output image numeric type; if not provided, defaults to `Int` for finite-photon
-    simulations (determined by `img_spec.photon_count.nphotons`) and `Float64` for infinite-photon models.
+    simulations (determined by `img_spec.readout_spec.nphotons`) and `Float64` for infinite-photon models.
 - `true_sky`: a `TrueSky` model (e.g. `PointSource`, `DoubleSystem`, `TrueSkyImage`).
 - `atm_spec`: an `AtmosphereSpec` used to produce phase screens.
-- `img_spec`: an `ImagingSpec` describing the aperture, image size, photon budget and filter.
+- `img_spec`: an `ImagingSpec` describing the aperture, image size, photon budget, readout and filter.
 
 # Keyword Arguments
 - `n`: number of images to simulate.
@@ -130,7 +130,7 @@ the results to an HDF5 file.
 """
 function simulate_images(::Type{T}, true_sky::TrueSky, atm_spec::AtmosphereSpec, img_spec::ImagingSpec;
     n::Int, batch::Int=DEFAULT_BATCH, file=nothing, verbose=true, savephases::Bool=true, deviceadapter=ComputeBackend()) where {T}
-    if !isfinite_photons(img_spec.photon_count) && T <: Integer
+    if !isfinite_photons(img_spec.readout_spec) && T <: Integer
         throw(ArgumentError("Integer image eltype not compatible with infinite-photon imaging spec."))
     end
     if true_sky isa TrueSkyImage && size(true_sky.true_sky_fft) != image_size(img_spec)
@@ -147,6 +147,6 @@ end
 simulate_images(::Type{T}, atm_spec::AtmosphereSpec, img_spec::ImagingSpec; kwargs...) where {T} =
     simulate_images(T, PointSource(), atm_spec, img_spec; kwargs...)
 simulate_images(true_sky::TrueSky, atm_spec::AtmosphereSpec, img_spec::ImagingSpec{T}; kwargs...) where {T} =
-    simulate_images(isfinite_photons(img_spec.photon_count) ? Int : T, true_sky, atm_spec, img_spec; kwargs...)
+    simulate_images(isfinite_photons(img_spec.readout_spec) ? Int : T, true_sky, atm_spec, img_spec; kwargs...)
 simulate_images(atm_spec::AtmosphereSpec, img_spec::ImagingSpec; kwargs...) =
     simulate_images(PointSource(), atm_spec, img_spec; kwargs...)
