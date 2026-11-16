@@ -12,18 +12,17 @@ export get_num_threads, set_num_threads
 include("io.jl")
 export HDF5File
 include("atmosphere.jl")
-export kolmogorov_covmat, SingleLayer, SavedPhases
+export SavedPhases, SingleLayer, kolmogorov_covmat
 # Low-level phase-generation API
-export scale_phases!, KarhunenLoeveSampler, HardingInterpolator,
-    harding_upsample!, harding_interpolate!, SavedPhaseReader, PhaseBuffers, samplephases!
+export HardingInterpolator, KarhunenLoeveSampler, PhaseBuffers, SavedPhaseReader,
+    harding_interpolate!, harding_upsample!, samplephases!, scale_phases!
 
 include("imaging.jl")
-export FilterSpec, ImagingSpec, ReadoutSpec, Exposure, PointSource, DoubleSystem, TrueSkyImage,
-    CircularAperture
+export CircularAperture, DoubleSystem, Exposure, FilterSpec, ImagingSpec, PointSource,
+    ReadoutSpec, TrueSkyImage
 # Low-level imaging API
-export ImagingPlan, OpticalBuffers, ImageBuffers, BilinearInterpolator,
-    phases_to_pupil!, pupil_to_psf!, apply_truesky!, readout!, compute_psf!, compute_images!,
-    compute_images
+export BilinearInterpolator, ImagingPlan, OpticalBuffers, apply_truesky!, compute_images,
+    compute_images!, compute_psf!, phases_to_pupil!, pupil_to_psf!, readout!
 include("simulation.jl")
 export simulate_images, simulate_phases
 

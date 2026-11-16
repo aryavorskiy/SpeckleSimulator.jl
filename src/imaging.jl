@@ -341,6 +341,19 @@ struct ImagingPlan{ST<:ImagingSpec, WT, OT, CT, FT<:Real}
     channels::Vector{CT}
     psf_norm::FT
 end
+function long_exp_offsets(atm_spec::AtmosphereSpec, img_spec::ImagingSpec)
+    n = img_spec.exposure.nsteps
+    if n == 1 || iszero(img_spec.exposure.exptime) || all(iszero, atm_spec.wind_velocity)
+        offset_list = [ustrip.(atm_spec.wind_velocity .* img_spec.exposure.exptime .* 0)]
+    else
+        offset_list = [NoUnits.(atm_spec.wind_velocity .* (img_spec.exposure.exptime * j / (n - 1) / img_spec.grid_step)) for j in 0:n-1]
+    end
+    if img_spec.exposure.round_offsets
+        offset_list = [round.(offset) for offset in offset_list]
+    end
+    mins = minimum(first, offset_list), minimum(last, offset_list)
+    return [offset .- mins for offset in offset_list]
+end
 function ImagingPlan(atm_spec::AtmosphereSpec, img_spec::ImagingSpec)
     offsets = long_exp_offsets(atm_spec, img_spec)
     NT = eltype(img_spec.aperture)
@@ -389,20 +402,55 @@ FFT plan over them. Nothing else -- the per-wavelength constants live in [`Imagi
 the PSF accumulator and readout image are supplied by the caller, see [`compute_psf!`](@ref) and
 [`readout!`](@ref).
 """
-struct OpticalBuffers{MT, PT}
+struct OpticalBuffers{MT, PT, CT}
     pupil_buffer::MT
     focal_buffer::MT
-    fftplan::PT
+    fftplans::Vector{PT}
+    chunk_ranges::Vector{CT}
 end
 image_size(bufs::OpticalBuffers) = size(bufs.pupil_buffer)[1:2]
 batch_length(bufs::OpticalBuffers) = size(bufs.pupil_buffer, 3)
+function maybethreads(f::Function, bufs::OpticalBuffers)
+    if length(bufs.chunk_ranges) == 1 || bufs.pupil_buffer isa SubArray
+        f(bufs, :)
+    else
+        Threads.@threads for (j, zs) in enumerate(bufs.chunk_ranges)
+            @views f(OpticalBuffers(bufs.pupil_buffer[:, :, ], bufs.focal_buffer[:, :, ],
+                [bufs.fftplans[j]], [zs]), zs)
+        end
+    end
+end
 
-OpticalBuffers(pupil_buffer::AbstractArray{<:Complex, 3}) =
-    OpticalBuffers(pupil_buffer, similar(pupil_buffer), plan_fft(pupil_buffer, (1, 2)))
-OpticalBuffers(img_array::AbstractArray, batch::Int=DEFAULT_BATCH, sz::Tuple=size(img_array)[1:2]) =
-    OpticalBuffers(similar(img_array, complex(eltype(img_array)), sz..., batch))
-OpticalBuffers(plan::ImagingPlan, batch::Int=DEFAULT_BATCH) =
-    OpticalBuffers(plan.spec.aperture, batch, plan.spec.img_size)
+function OpticalBuffers(pupil_buffer::AbstractArray{<:Complex, 3}; nthreads::Int=get_num_threads())
+    batch = size(pupil_buffer, 3)
+    chunk_ranges = collect(chunks(1:batch; n=min(batch, nthreads)))
+    fftplans = [plan_fft(view(pupil_buffer, :, :, zs), (1, 2)) for zs in chunk_ranges]
+    OpticalBuffers(pupil_buffer, similar(pupil_buffer), fftplans, chunk_ranges)
+end
+OpticalBuffers(img_array::AbstractArray, sz::Tuple=size(img_array)[1:2]; batch::Int=1, kw...) =
+    OpticalBuffers(similar(img_array, complex(eltype(img_array)), sz..., batch); kw...)
+OpticalBuffers(spec::ImagingSpec; kw...) =
+    OpticalBuffers(spec.aperture, spec.img_size; kw...)
+OpticalBuffers(plan::ImagingPlan; kw...) =
+    OpticalBuffers(plan.spec; kw...)
+
+imgbuf(::Type{T}, buf::OpticalBuffers) where T =
+    similar(buf.pupil_buffer, T)
+imgbuf(buf::OpticalBuffers) = imgbuf(real(eltype(buf.pupil_buffer)), buf)
+
+_fft_pass!(to, plan, from, center=true) = if center
+    ifftshift!(to, from, (1, 2))
+    mul!(from, plan, to)
+    fftshift!(to, from, (1, 2))
+else
+    mul!(to, plan, from)
+end
+forward_pass!(buf::OpticalBuffers, center=true) = maybethreads(buf) do bufview, _
+    _fft_pass!(bufview.focal_buffer, only(bufview.fftplans), bufview.pupil_buffer, center)
+end
+backward_pass!(buf::OpticalBuffers, center=true) =  maybethreads(buf) do bufview, _
+    _fft_pass!(bufview.pupil_buffer, inv(only(bufview.fftplans)), bufview.focal_buffer, center)
+end
 
 """
     phases_to_pupil!(pupil, phases, aperture, offset, phs_factor)
@@ -419,7 +467,9 @@ function phases_to_pupil!(pupil::AbstractArray, phases, aperture, offset::Tuple=
         cis, Base.Fix2(*, phs_factor))
     return pupil
 end
-phases_to_pupil!(buf::OpticalBuffers, args...) = phases_to_pupil!(buf.pupil_buffer, args...)
+phases_to_pupil!(buf::OpticalBuffers, phases, args...) = maybethreads(buf) do bufview, zs
+    @views phases_to_pupil!(bufview.pupil_buffer, phases[:, :, zs], args...)
+end
 
 """
     pupil_to_psf!(psf, bufs::OpticalBuffers, ch::FilterChannel[, α, β])
@@ -427,11 +477,9 @@ phases_to_pupil!(buf::OpticalBuffers, args...) = phases_to_pupil!(buf.pupil_buff
 Propagate the pupil field currently in `bufs` to the focal plane and **accumulate** its intensity
 into `psf`, rescaled to `ch`'s plate scale and weighted by `α * ch.weight`. Does not zero `psf`.
 """
-function pupil_to_psf!(psf, bufs::OpticalBuffers, ch::FilterChannel, α=true, β=false)
-    mul!(bufs.focal_buffer, bufs.fftplan, bufs.pupil_buffer)
-    fftshift!(bufs.pupil_buffer, bufs.focal_buffer, (1, 2))
-    bilinear_interpolate!(psf, bufs.pupil_buffer, ch.interpolator, α * ch.weight, β, identity, abs2)
-    return psf
+pupil_to_psf!(psf, buf::OpticalBuffers, ch::FilterChannel, α=true, β=false) = maybethreads(buf) do bufview, zs
+    forward_pass!(bufview)
+    @views bilinear_interpolate!(psf[:, :, zs], bufview.pupil_buffer, ch.interpolator, α * ch.weight, β, identity, abs2)
 end
 
 """
@@ -441,11 +489,11 @@ Accumulate the (unnormalised) point-spread function over every exposure offset a
 `psf = α * PSF(phases) + β * psf`. Divide by `plan.psf_norm` for a flux-normalised PSF, or hand
 it to [`readout!`](@ref).
 """
-function compute_psf!(psf, bufs::OpticalBuffers, plan::ImagingPlan, phases, α=true, β=false)
+compute_psf!(psf, bufs::OpticalBuffers, plan::ImagingPlan, phases, α=true, β=false) = maybethreads(bufs) do bufview, zs
     firstiter = true
-    for offset in plan.offsets, ch in plan.channels
-        phases_to_pupil!(bufs, phases, plan.spec.aperture, offset, ch.phs_factor)
-        pupil_to_psf!(psf, bufs, ch, α / plan.psf_norm, firstiter ? β : one(β))
+    @views for offset in plan.offsets, ch in plan.channels
+        phases_to_pupil!(bufview, phases[:, :, zs], plan.spec.aperture, offset, ch.phs_factor)
+        pupil_to_psf!(psf[:, :, zs], bufview, ch, α / plan.psf_norm, firstiter ? β : one(β))
         firstiter = false
     end
     return psf
@@ -458,9 +506,9 @@ Convolve `psf` in place with a [`TrueSky`](@ref) brightness model, using `bufs` 
 """
 function apply_truesky!(psf, ts::TrueSkyImage, opt_buffer::OpticalBuffers=OpticalBuffers(psf))
     copyto!(opt_buffer.pupil_buffer, psf)
-    mul!(opt_buffer.focal_buffer, opt_buffer.fftplan, opt_buffer.pupil_buffer)
+    forward_pass!(opt_buffer, false)
     opt_buffer.focal_buffer .*= ts.true_sky_fft
-    ldiv!(opt_buffer.pupil_buffer, opt_buffer.fftplan, opt_buffer.focal_buffer)
+    backward_pass!(opt_buffer, false)
     psf .= real.(opt_buffer.pupil_buffer)
     return psf
 end
@@ -475,7 +523,9 @@ function apply_truesky!(psf, ds::DoubleSystem)
     return psf
 end
 apply_truesky!(psf, ::PointSource) = psf
-apply_truesky!(psf, ts, ::OpticalBuffers) = apply_truesky!(psf, ts)
+apply_truesky!(psf, ts, bufs::OpticalBuffers) = maybethreads(bufs) do _, zs
+    @views apply_truesky!(psf[:, :, zs], ts)
+end
 
 """
     CircularAperture([T, ]sz, [radius; aa_dist=1])
@@ -507,108 +557,3 @@ function CircularAperture(::Type{T}, sz::NTuple{2}, radius=minimum((sz .- 1) .÷
 end
 CircularAperture(sz::NTuple{2}, radius=minimum((sz .- 1) .÷ 2); kw...) =
     CircularAperture(Float64, sz, radius; kw...)
-
-function padded_plate_size(atm_spec::AtmosphereSpec, img_spec::ImagingSpec)
-    if iszero(img_spec.exposure.exptime) || all(iszero, atm_spec.wind_velocity)
-        return plate_size(img_spec)
-    end
-    max_offset = atm_spec.wind_velocity .* img_spec.exposure.exptime ./ img_spec.grid_step
-    return plate_size(img_spec) .+ ceil.(Int, abs.(NoUnits.(max_offset)))
-end
-function long_exp_offsets(atm_spec::AtmosphereSpec, img_spec::ImagingSpec)
-    n = img_spec.exposure.nsteps
-    if n == 1 || iszero(img_spec.exposure.exptime) || all(iszero, atm_spec.wind_velocity)
-        offset_list = [ustrip.(atm_spec.wind_velocity .* img_spec.exposure.exptime .* 0)]
-    else
-        offset_list = [NoUnits.(atm_spec.wind_velocity .* (img_spec.exposure.exptime * j / (n - 1) / img_spec.grid_step)) for j in 0:n-1]
-    end
-    if img_spec.exposure.round_offsets
-        offset_list = [round.(offset) for offset in offset_list]
-    end
-    mins = minimum(first, offset_list), minimum(last, offset_list)
-    return [offset .- mins for offset in offset_list]
-end
-
-"""
-    ImageBuffers(plan::ImagingPlan, batch[, deviceadapter])
-
-Scratch for a batched imaging run: one [`OpticalBuffers`](@ref) per worker, the batch chunk ranges
-they cover, and the device-adapted [`ImagingPlan`](@ref) they share.
-"""
-struct ImageBuffers{BT<:OpticalBuffers, PLT<:ImagingPlan, CT}
-    opt_bufs::Vector{BT}
-    chunk_ranges::Vector{CT}
-    plan::PLT
-end
-image_size(ib::ImageBuffers) = image_size(ib.plan)
-batch_length(ib::ImageBuffers) = sum(length, ib.chunk_ranges)
-
-allocate_images(::Type{T}, ib::ImageBuffers) where {T} =
-    similar(ib.plan.spec.aperture, T, image_size(ib)..., batch_length(ib))
-allocate_images(ib::ImageBuffers) =
-    allocate_images(real(float(eltype(ib.plan.spec.aperture))), ib)
-
-function ImageBuffers(plan::ImagingPlan, batch::Int,
-        adapter=identity)
-    chunk_ranges = collect(chunks(1:batch; n=get_num_threads()))
-    plan_adapt = adapt(adapter, plan)
-    opt_bufs = map(cr -> OpticalBuffers(plan_adapt, length(cr)), chunk_ranges)
-    return ImageBuffers(opt_bufs, chunk_ranges, plan_adapt)
-end
-ImageBuffers(spec::ImagingSpec, atm_spec::AtmosphereSpec, args...) =
-    ImageBuffers(ImagingPlan(atm_spec, spec), args...)
-
-function prepare_buffers(atm_spec, img_spec::ImagingSpec, batch::Int, adapter)
-    return prepare_phasebuffers(atm_spec, padded_plate_size(atm_spec, img_spec),
-            img_spec.grid_step, batch, adapter),
-        ImageBuffers(ImagingPlan(atm_spec, img_spec), batch, adapter)
-end
-
-"""
-    compute_psf!(dst, bufs::ImageBuffers, phases[, α, β])
-
-Performs `compute_psf!` in parallel over the batch dimension.
-"""
-function compute_psf!(dst, bufs::ImageBuffers, phases, α=true, β=false)
-    if length(bufs.opt_bufs) == 1
-        compute_psf!(dst, bufs.opt_bufs[1], bufs.plan, phases, α, β)
-    else
-        @views Threads.@threads for j in eachindex(bufs.opt_bufs)
-            cr = bufs.chunk_ranges[j]
-            compute_psf!(dst[:, :, cr], bufs.opt_bufs[j], bufs.plan, phases[:, :, cr], α, β)
-        end
-    end
-end
-
-"""
-    apply_truesky!(dst, ts::TrueSky, bufs::ImageBuffers)
-
-Performs `apply_truesky!` in parallel over the batch dimension.
-"""
-function apply_truesky!(dst, ts::TrueSky, bufs::ImageBuffers)
-    if length(bufs.opt_bufs) == 1
-        apply_truesky!(dst, ts, only(bufs.opt_bufs))
-    else
-        @views Threads.@threads for j in eachindex(bufs.opt_bufs)
-            cr = bufs.chunk_ranges[j]
-            apply_truesky!(dst[:, :, cr], ts, bufs.opt_bufs[j])
-        end
-    end
-end
-
-"""
-    readout!(dst, img, pc::ReadoutSpec, zchunks)
-
-Performs `readout!` in parallel over the batch dimension.
-"""
-function readout!(dst, img, pc::ReadoutSpec, zchunks)
-    if length(zchunks) == 1
-        readout!(dst, img, pc)
-    else
-        @views Threads.@threads for zchunk in zchunks
-            readout!(dst[:, :, zchunk], img[:, :, zchunk], pc)
-        end
-    end
-end
-readout!(dst, img, bufs::ImageBuffers) =
-    readout!(dst, img, bufs.plan.spec.readout_spec, bufs.chunk_ranges)

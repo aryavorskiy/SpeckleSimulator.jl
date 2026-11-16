@@ -454,7 +454,7 @@ function samplephases!(out, reader::SavedPhaseReader, α=true)
     return out
 end
 
-function prepare_phasebuffers(spec::SavedPhases{T}, plate_size::NTuple{2,Int},
+function PhaseBuffers(spec::SavedPhases{T}, plate_size::NTuple{2,Int},
         grid_step::Number, batch::Int, deviceadapter) where T
     spec.grid_step !== nothing && (spec.grid_step != grid_step) && throw(ArgumentError(
         "Saved phase dataset has grid step $(spec.grid_step), but $grid_step was requested."

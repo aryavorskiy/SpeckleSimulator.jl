@@ -1,3 +1,11 @@
+function padded_plate_size(atm_spec::AtmosphereSpec, img_spec::ImagingSpec)
+    if iszero(img_spec.exposure.exptime) || all(iszero, atm_spec.wind_velocity)
+        return plate_size(img_spec)
+    end
+    max_offset = atm_spec.wind_velocity .* img_spec.exposure.exptime ./ img_spec.grid_step
+    return plate_size(img_spec) .+ ceil.(Int, abs.(NoUnits.(max_offset)))
+end
+
 """
     SimulationBuffers
 
@@ -8,17 +16,22 @@ Internal to the simulation loop -- the pieces are separately usable on their own
 threading five arguments through `simulation_run`. `image_buffers`, `psf` and `images` are
 `nothing` for a phases-only run.
 """
-struct SimulationBuffers{PB<:PhaseBuffers, PhT, IB, PsfT, OutT}
+struct SimulationBuffers{PB<:PhaseBuffers, PhT, OB, PlanT, PsfT, OutT}
     phase_buffers::PB
     phases::PhT
-    image_buffers::IB
+    optical_buffers::OB
+    img_plan::PlanT
     psf::PsfT
     images::OutT
 end
 SimulationBuffers(pb::PhaseBuffers) =
-    SimulationBuffers(pb, allocate_phases(pb), nothing, nothing, nothing)
-SimulationBuffers(::Type{T}, pb::PhaseBuffers, ib::ImageBuffers) where {T} =
-    SimulationBuffers(pb, allocate_phases(pb), ib, allocate_images(ib), allocate_images(T, ib))
+    SimulationBuffers(pb, allocate_phases(pb), nothing, nothing, nothing, nothing)
+function SimulationBuffers(::Type{T}, atm_spec, img_spec::ImagingSpec; batch::Int=1, deviceadapter=identity) where {T}
+    pb = PhaseBuffers(atm_spec, padded_plate_size(atm_spec, img_spec); batch, deviceadapter, img_spec.grid_step)
+    img_plan = adapt(deviceadapter, ImagingPlan(atm_spec, img_spec))
+    ob = OpticalBuffers(img_plan; batch)
+    SimulationBuffers(pb, allocate_phases(pb), ob, img_plan, imgbuf(ob), imgbuf(T, ob))
+end
 batch_length(sb::SimulationBuffers) = batch_length(sb.phase_buffers)
 
 function simulation_run!!(img_bd::BufferedDataset, phs_bd::BufferedDataset,
@@ -27,10 +40,10 @@ function simulation_run!!(img_bd::BufferedDataset, phs_bd::BufferedDataset,
     p = Progress(n, desc="Simulating images", enabled=verbose, dt=1)
     for j in 1:cld(n, batch)
         samplephases!(sb.phases, sb.phase_buffers)
-        if sb.image_buffers !== nothing
-            compute_psf!(sb.psf, sb.image_buffers, sb.phases)
-            apply_truesky!(sb.psf, true_sky_adapt, sb.image_buffers)
-            readout!(sb.images, sb.psf, sb.image_buffers)
+        if sb.optical_buffers !== nothing
+            compute_psf!(sb.psf, sb.optical_buffers, sb.img_plan, sb.phases)
+            apply_truesky!(sb.psf, true_sky_adapt, sb.optical_buffers)
+            readout!(sb.images, sb.psf, sb.img_plan.img_spec.readout)
             write_batch!(img_bd, j, sb.images)
         end
         write_batch!(phs_bd, j, sb.phases)
@@ -139,8 +152,7 @@ function simulate_images(::Type{T}, true_sky::TrueSky, atm_spec::AtmosphereSpec,
 
     batch = min(batch, n)
     true_sky_adapt = adapt(deviceadapter, true_sky)
-    phase_buffers, image_buffers = prepare_buffers(atm_spec, img_spec, batch, deviceadapter)
-    simulation_run(file, SimulationBuffers(T, phase_buffers, image_buffers), true_sky_adapt, n;
+    simulation_run(file, SimulationBuffers(T, atm_spec, img_spec; batch, deviceadapter), true_sky_adapt, n;
         verbose=verbose, savephases=savephases)
 end
 simulate_images(::Type{T}, atm_spec::AtmosphereSpec, img_spec::ImagingSpec; kwargs...) where {T} =
