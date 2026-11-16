@@ -24,3 +24,9 @@ end
 
 _device_eigen(::AbstractArray) = false
 device_eigen(adapter) = _device_eigen(adapt(adapter, zeros(Float32, 1, 1)))
+
+diameter(sz::NTuple{2, Int}) = sz[1] == sz[2] ? sz[1] :
+    throw(ArgumentError(lazy"Expected a square grid, got $sz"))
+diameter(A::AbstractArray) = diameter(size(A)[1:2])
+
+const Maybe{T} = Union{T,Nothing}

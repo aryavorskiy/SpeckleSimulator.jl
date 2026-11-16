@@ -69,7 +69,7 @@ function AtmosphericTurbulenceSimulator.speckle_viewer(::Type{T}=Float64;
 
     axis_kw = (aspect=DataAspect(), xticklabelspace=24.0, yticklabelspace=30.0)
     cbar_height(ax) = lift(vp -> vp.widths[2], ax.scene.viewport)
-    ap_step = d / maximum(size(aperture))
+    ap_step = d / diameter(aperture)
     ap_x, ap_y = ustrip.(axes(aperture) .* ap_step)
 
     phase_screen_2d = lift(phs -> phs[axes(aperture)..., 1], phase_screen_scaled)

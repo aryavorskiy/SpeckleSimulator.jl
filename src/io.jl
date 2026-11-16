@@ -17,7 +17,7 @@ function _make_buffer(ds::HDF5.Dataset, batch::Int)
     end
     return zeros(eltype(ds)::Type, size(ds, 1)::Int, size(ds, 2)::Int, batch)
 end
-_make_buffer(::Union{<:AbstractArray, Nothing}, _) = nothing
+_make_buffer(::Maybe{<:AbstractArray}, _) = nothing
 BufferedDataset(ds1, batch::Int=0) = BufferedDataset(ds1, _make_buffer(ds1, batch))
 
 function write_batch!(bd::BufferedDataset{<:HDF5.Dataset}, j, batch)

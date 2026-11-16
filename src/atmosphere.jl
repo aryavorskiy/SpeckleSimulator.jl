@@ -56,11 +56,11 @@ Rescale `phases` in place to Fried parameter `r₀`, assuming they were generate
 - `grid_step`: physical size of one pixel; defaults to one (i. e. ``r_0`` is in pixels).
 """
 function scale_phases!(phases::AbstractArray, d, r₀::Number)
-    grid_step = d / maximum(size(phases)[1:2])
+    grid_step = d / diameter(phases)
     phases .*= convert(eltype(phases), (NoUnits(r₀ / grid_step))^(-5/6))
 end
 scale_phases!(phases::AbstractArray, r₀::Number; grid_step=1) =
-    scale_phases!(phases, maximum(size(phases)[1:2]) * grid_step, r₀)
+    scale_phases!(phases, diameter(phases) * grid_step, r₀)
 
 const EigenType = Union{Tuple{<:Any,<:Any}, Eigen}
 
@@ -86,16 +86,27 @@ struct KarhunenLoeveSampler{MT}
     noise_transform::MT
     noise_buffer::MT
 end
-function KarhunenLoeveSampler(sz::NTuple{2,Int}, (E, U)::EigenType, batch::Int)
+function KarhunenLoeveSampler(sz::NTuple{2,Int}, (E, U)::EigenType; batch::Int=1, deviceadapter=identity)
     @assert length(E) == prod(sz)
     @assert size(U) == (length(E), length(E))
-    E .= max.(E, zero(eltype(E)))
-    noise_transform = U .* sqrt.(E')
-    noise_buffer = similar(U, size(U, 2), batch)
+    E_adapt = adapt(deviceadapter, E)
+    U_adapt = adapt(deviceadapter, U)
+    E_adapt .= max.(E_adapt, zero(eltype(E_adapt)))
+    noise_transform = U_adapt .* sqrt.(E_adapt')
+    noise_buffer = similar(U_adapt, size(U, 2), batch)
     KarhunenLoeveSampler(sz, noise_transform, noise_buffer)
 end
-KarhunenLoeveSampler(sz::NTuple{2,Int}, covmat::AbstractMatrix, batch::Int) =
-    KarhunenLoeveSampler(sz, eigen(Symmetric(covmat)), batch)
+function KarhunenLoeveSampler(sz::NTuple{2,Int}, covmat::AbstractMatrix; batch::Int=1, deviceadapter=identity)
+    if device_eigen(deviceadapter)
+        covar = adapt_storage(deviceadapter, covmat)
+        E, U = eigen(Symmetric(covar))
+    else
+        E_host, U_host = eigen(Symmetric(covmat))
+        E = adapt_storage(deviceadapter, E_host)
+        U = adapt_storage(deviceadapter, U_host)
+    end
+    KarhunenLoeveSampler(sz, (E, U); batch)
+end
 plate_size(sampler::KarhunenLoeveSampler) = sampler.shape
 batch_length(sampler::KarhunenLoeveSampler) = size(sampler.noise_buffer, 2)
 allocate_phases(sampler::KarhunenLoeveSampler) =
@@ -119,6 +130,14 @@ function samplephases!(out::AbstractArray{<:Any,3}, sampler::KarhunenLoeveSample
     randn!(sampler.noise_buffer)
     mul!(reshape(out, :, size(out, 3)), sampler.noise_transform, sampler.noise_buffer, α, β)
     return out
+end
+
+_resolve_grid_step(d, grid_step, plate, error=true) = if grid_step !== nothing
+    grid_step
+elseif d !== nothing
+    d / diameter(plate)
+elseif error
+    throw(ArgumentError("Physical aperture diameter `d` or `grid_step` must be defined"))
 end
 
 """
@@ -152,26 +171,6 @@ function SingleLayer(r0::Number; base_wavelength=DEFAULT_WAVELEN, wind_velocity=
     SingleLayer(float(r0), convert_numtype(numtype(float(r0)), wl), wind_velocity, harding)
 end
 SingleLayer(::Type{T}, r0::Number; kw...) where T = SingleLayer(convert_numtype(T, r0); kw...)
-function prepare_phasebuffers(spec::SingleLayer, plate_size::NTuple{2,Int}, grid_step::Number,
-        batch::Int, deviceadapter)
-    T = numtype(spec.r₀)
-    interpolator = HardingInterpolator(T, plate_size, batch, deviceadapter; spec.harding_kw...)
-    low_size = first(interpolator.stage_sizes)
-    covar_host = kolmogorov_covmat(T, low_size)
-    if device_eigen(deviceadapter)
-        covar = adapt_storage(deviceadapter, covar_host)
-        E, U = eigen(Symmetric(covar))
-    else
-        E_host, U_host = eigen(Symmetric(covar_host))
-        E = adapt_storage(deviceadapter, E_host)
-        U = adapt_storage(deviceadapter, U_host)
-    end
-    kl = KarhunenLoeveSampler(low_size, (E, U), batch)
-    r₀_px = convert(T, NoUnits(spec.r₀ / grid_step))
-    nstages(interpolator) == 0 && return PhaseBuffers(kl, nothing, nothing, r₀_px^(-5//6))
-    low_array = adapt_storage(deviceadapter, zeros(T, low_size..., batch))
-    return PhaseBuffers(kl, interpolator, low_array, r₀_px^(-5//6))
-end
 
 # One rung of the ladder: run every pass, then crop the padding and copy out, scaled by `α`.
 function _harding_ladder!(to, work_bufs, r₀_px, from, α=true, β=false)
@@ -334,8 +333,8 @@ struct HardingInterpolator{WT,CT}
     work_bufs::Vector{WT}
     chunk_ranges::Vector{CT}
 end
-function HardingInterpolator(::Type{T}, size_to::NTuple{2,Int}, batch::Int,
-        adapter=identity; kw...) where T
+function HardingInterpolator(::Type{T}, size_to::NTuple{2,Int}; batch::Int=1,
+        deviceadapter=identity, kw...) where T
     stage_sizes = _harding_spec(size_to; kw...)
     low_size = first(stage_sizes)
     any(low_size .≤ 11) && throw(ArgumentError("Dimensions must be greater than 11"))
@@ -343,13 +342,13 @@ function HardingInterpolator(::Type{T}, size_to::NTuple{2,Int}, batch::Int,
     chunk_ranges = collect(chunks(1:batch; n=nbufs))
     work_bufs = map(chunk_ranges) do chunk_range
         map(2:length(stage_sizes)) do j
-            adapt_storage(adapter, zeros(T, (stage_sizes[j] .+ 10)..., length(chunk_range)))
+            adapt_storage(deviceadapter, zeros(T, (stage_sizes[j] .+ 10)..., length(chunk_range)))
         end
     end
     return HardingInterpolator(size_to, stage_sizes, work_bufs, chunk_ranges)
 end
-HardingInterpolator(size_to::NTuple{2,Int}, batch::Int, adapter=identity; kw...) =
-    HardingInterpolator(Float64, size_to, batch, adapter; kw...)
+HardingInterpolator(size_to::NTuple{2,Int}; kw...) =
+    HardingInterpolator(Float64, size_to; kw...)
 plate_size(hi::HardingInterpolator) = hi.size_to
 batch_length(hi::HardingInterpolator) = sum(length, hi.chunk_ranges)
 nstages(hi::HardingInterpolator) = length(hi.stage_sizes) - 1
@@ -410,14 +409,13 @@ struct SavedPhases{T<:Real,D,WT,WL,GT} <: AtmosphereSpec{T}
     base_wavelength::WL
     grid_step::GT
 end
-function SavedPhases(dataset, d::Union{Number,Nothing}=nothing;
+function SavedPhases(dataset, d::Maybe{Number}=nothing;
         wind_velocity::NTuple{2,<:Number}=(0, 0), base_wavelength=DEFAULT_WAVELEN,
         grid_step=nothing)
     T = eltype(dataset)
     WT = typeof(wind_velocity[1])
     base_wl = _as_wavelength(base_wavelength)
-    grid_step_final = grid_step !== nothing ? grid_step :
-        d !== nothing ? d / maximum(size(dataset)[1:2]) : nothing
+    grid_step_final = _resolve_grid_step(d, grid_step, dataset, false)
     return SavedPhases{T,typeof(dataset),WT,typeof(base_wl),typeof(grid_step_final)}(
         dataset, wind_velocity, base_wl, grid_step_final)
 end
@@ -454,34 +452,8 @@ function samplephases!(out, reader::SavedPhaseReader, α=true)
     return out
 end
 
-function PhaseBuffers(spec::SavedPhases{T}, plate_size::NTuple{2,Int},
-        grid_step::Number, batch::Int, deviceadapter) where T
-    spec.grid_step !== nothing && (spec.grid_step != grid_step) && throw(ArgumentError(
-        "Saved phase dataset has grid step $(spec.grid_step), but $grid_step was requested."
-    ))
-    saved_size = size(spec.dataset)::NTuple{3,Int}
-    saved_plate_size = saved_size[1:2]
-    all(saved_plate_size .>= plate_size) || throw(ArgumentError(
-        "Saved phase dataset has plate size $saved_plate_size, but at least $plate_size was requested."
-    ))
-    crop_indices = (1:plate_size[1], 1:plate_size[2])
-    reader = SavedPhaseReader(BufferedDataset(spec.dataset, batch), crop_indices, batch)
-    return PhaseBuffers(reader, nothing, nothing, true)
-end
-
-# Shared by `PhaseBuffers` and `simulate_phases`.
-function _resolve_grid_step(atm_spec::AtmosphereSpec, plate_size, d, grid_step)
-    grid_step !== nothing && return grid_step
-    if d === nothing
-        atm_spec isa SavedPhases || throw(ArgumentError(
-            "Either aperture diameter `d` or `grid_step` must be provided."))
-        return atm_spec.grid_step === nothing ? 1 : atm_spec.grid_step
-    end
-    return d / maximum(plate_size)
-end
-
 """
-    PhaseBuffers(atm_spec::AtmosphereSpec, plate_size[, d]; grid_step, batch, deviceadapter)
+    PhaseBuffers(atm_spec::AtmosphereSpec, plate_size[, d][; grid_step, batch, deviceadapter])
 
 Everything needed to draw batches of phase screens. Owns no output array — allocate one with
 [`allocate_phases`](@ref) and pass it to [`samplephases!`](@ref).
@@ -505,10 +477,34 @@ struct PhaseBuffers{ST, IT, LT, FT}
     low_array::LT
     phase_scale::FT
 end
-PhaseBuffers(atm_spec::AtmosphereSpec, plate_size::NTuple{2,Int}, d=nothing;
-        grid_step=nothing, batch::Int=DEFAULT_BATCH, deviceadapter=Array) =
-    prepare_phasebuffers(atm_spec, plate_size,
-        _resolve_grid_step(atm_spec, plate_size, d, grid_step), batch, deviceadapter)
+function PhaseBuffers(spec::SavedPhases{T}, plate_size::NTuple{2,Int}, d::Maybe{Number}=nothing;
+        grid_step::Maybe{Number}=nothing, batch::Int=1, deviceadapter=identity) where T
+    grid_step_final = _resolve_grid_step(d, grid_step, plate_size, false) |> x -> isnothing(x) ? 1 : x
+    spec.grid_step !== nothing && (spec.grid_step != grid_step) && throw(ArgumentError(
+        "Saved phase dataset has grid step $(spec.grid_step), but $grid_step was requested."
+    ))
+    saved_size = size(spec.dataset)::NTuple{3,Int}
+    saved_plate_size = saved_size[1:2]
+    all(saved_plate_size .>= plate_size) || throw(ArgumentError(
+        "Saved phase dataset has plate size $saved_plate_size, but at least $plate_size was requested."
+    ))
+    crop_indices = (1:plate_size[1], 1:plate_size[2])
+    reader = SavedPhaseReader(BufferedDataset(spec.dataset, batch), crop_indices, batch)
+    return PhaseBuffers(reader, nothing, nothing, true)
+end
+function PhaseBuffers(spec::SingleLayer, plate_size::NTuple{2,Int}, d::Maybe{Number}=nothing;
+        grid_step::Maybe{Number}=nothing, batch::Int=1, deviceadapter=identity)
+    grid_step_final = _resolve_grid_step(d, grid_step, plate_size)
+    T = numtype(spec.r₀)
+    interpolator = HardingInterpolator(T, plate_size; batch, deviceadapter, spec.harding_kw...)
+    low_size = first(interpolator.stage_sizes)
+    covar_host = kolmogorov_covmat(T, low_size)
+    kl = KarhunenLoeveSampler(low_size, covar_host; batch, deviceadapter)
+    r₀_px = convert(T, NoUnits(spec.r₀ / grid_step_final))
+    nstages(interpolator) == 0 && return PhaseBuffers(kl, nothing, nothing, r₀_px^(-5//6))
+    low_array = adapt_storage(deviceadapter, zeros(T, low_size..., batch))
+    return PhaseBuffers(kl, interpolator, low_array, r₀_px^(-5//6))
+end
 
 plate_size(pb::PhaseBuffers) = if isnothing(pb.interpolator)
     plate_size(pb.sampler)

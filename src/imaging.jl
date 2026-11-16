@@ -286,8 +286,7 @@ Create an imaging system specification.
 # Arguments
 - `T`: desired number type, inferred from `aperture` if not provided.
 - `aperture`: 2D aperture (pupil) array describing the telescope pupil.
-- `d`: aperture diameter in the same units as ``r_0`` (e.g. `2m`). Used to compute `grid_step` as
-  `d / maximum(size(aperture))`.
+- `d`: aperture diameter in the same units as ``r_0`` (e.g. `2m`). Used to compute `grid_step`.
 - `readout_spec`: `ReadoutSpec` instance describing the readout. Default is no readout.
 
 # Keyword Arguments
@@ -300,16 +299,16 @@ Create an imaging system specification.
 - `img_size`: explicit output image size `(nx, ny)`. If not provided, computed from aperture size
   and `nyquist_oversample`.
 """
-function ImagingSpec(aperture::AbstractMatrix{T}, d::Number, readout_spec::ReadoutSpec=ReadoutSpec(Inf);
-    filter::FilterSpec=FilterSpec(DEFAULT_WAVELEN),
-    nyquist_oversample::Real=1, exposure::Union{Exposure,Number}=0,
-    img_size::NTuple{2,Int}=round.(Int, size(aperture) .* 2 .* nyquist_oversample),
-    grid_step::Number=d / maximum(size(aperture))) where T<:Real
+function ImagingSpec(aperture::AbstractMatrix{T}, d::Maybe{Number}, readout_spec::ReadoutSpec=ReadoutSpec(Inf);
+        filter::FilterSpec=FilterSpec(DEFAULT_WAVELEN),
+        nyquist_oversample::Real=1, exposure::Union{Exposure,Number}=0,
+        img_size::NTuple{2,Int}=round.(Int, size(aperture) .* 2 .* nyquist_oversample),
+        grid_step::Maybe{Number}=nothing) where T<:Real
+    grid_step_final = _resolve_grid_step(d, grid_step, aperture)
     pc = convert_numtype(T, readout_spec)
     ex = exposure isa Number ? Exposure(exposure) : exposure
-    ft = FilterSpec(
-        convert_numtype(T, filter.wavelengths), convert_numtype(T, filter.intensities))
-    return ImagingSpec(aperture, grid_step, pc, ft, ex, img_size)
+    ft = FilterSpec(convert_numtype(T, filter.wavelengths), convert_numtype(T, filter.intensities))
+    return ImagingSpec(aperture, grid_step_final, pc, ft, ex, img_size)
 end
 ImagingSpec(::Type{T}, aperture::AbstractMatrix, args...; kw...) where T<:Real =
     ImagingSpec(convert.(T, aperture), args...; kw...)

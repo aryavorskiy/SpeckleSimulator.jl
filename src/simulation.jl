@@ -106,8 +106,8 @@ the results to an HDF5 file.
 - `deviceadapter`: adapter for device-backed arrays (defaults to `Array`). To use GPU arrays,
   pass e.g. `CUDA.CuArray` here (requires CUDA.jl).
 """
-function simulate_phases(atm_spec::AtmosphereSpec, plate_size, d=nothing; n::Int,
-        grid_step::Union{Nothing,Number}=nothing, batch::Int=DEFAULT_BATCH, file=nothing,
+function simulate_phases(atm_spec::AtmosphereSpec, plate_size, d=nothing::Maybe{Number}; n::Int,
+        grid_step::Maybe{Number}=nothing, batch::Int=DEFAULT_BATCH, file=nothing,
         verbose=true, deviceadapter=Array)
     batch = min(batch, n)
     phase_buffers = PhaseBuffers(atm_spec, plate_size, d;
