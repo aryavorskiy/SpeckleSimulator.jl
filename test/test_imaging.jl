@@ -4,15 +4,25 @@ using Random, Unitful
     # 16 pix aperture, 4 pix r_0, sqrt(2) wind velocity
     ap = CircularAperture((16, 16))
     atm = SingleLayer(4, wind_velocity=(1, 1))
-    @testset "True sky" begin
+
+    @testset "Flat wavefront" begin
+        ap_sq = ones(16, 16)
+        img_sq = ImagingSpec(ap_sq, 16, nyquist_oversample = 0.5)
+        atm_flat = SavedPhases(zeros(16, 16, 1))
+        img = simulate_images(atm_flat, img_sq, n=1).images[:, :, 1]
+        @test img[9, 9] ≈ 1
+        img[9, 9] = 0
+        @test img ≈ zero(img)
+    end
+
+    @testset "PSF normalization" begin
         ts1 = PointSource()
         ts2 = DoubleSystem((3, 2), 0.6)
         ts3 = TrueSkyImage(rand(32, 32))
 
-        pc = ReadoutSpec(Inf)
-        img_spec = ImagingSpec(ap, 16, pc)
-        img_spec2 = ImagingSpec(ap, 16, pc, filter=FilterSpec(bandwidth=0.1))
-        img_spec3 = ImagingSpec(ap, 16, pc, filter=FilterSpec(bandwidth=0.1, tedge=0.5), exposure=Exposure(3, 5))
+        img_spec = ImagingSpec(ap, 16)
+        img_spec2 = ImagingSpec(ap, 16, filter=FilterSpec(bandwidth=0.1))
+        img_spec3 = ImagingSpec(ap, 16, filter=FilterSpec(bandwidth=0.1, tedge=0.5), exposure=Exposure(3, 5))
 
         Random.seed!(123)
         for (ts, is) in zip((ts1, ts2, ts3), (img_spec, img_spec2, img_spec3))

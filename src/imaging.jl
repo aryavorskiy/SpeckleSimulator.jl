@@ -59,8 +59,8 @@ struct BilinearInterpolator{IT,VT}
 end
 function BilinearScale(to::AbstractArray, scale::Real, sz=(size(to, 1), size(to, 2)))
     nx, ny = sz
-    sx = range((1 - nx ÷ 2) / scale + nx ÷ 2 + 1, step=1/scale, length=nx)
-    sy = range((1 - ny ÷ 2) / scale + ny ÷ 2 + 1, step=1/scale, length=ny)
+    sx = range(-nx ÷ 2 / scale + nx ÷ 2 + 1, step=1/scale, length=nx)
+    sy = range(-ny ÷ 2 / scale + ny ÷ 2 + 1, step=1/scale, length=ny)
     ix = copy!(similar(to, Int, nx), clamp.(floor.(Int, sx), 1, nx))
     iy = copy!(similar(to, Int, ny), clamp.(floor.(Int, sy), 1, ny))
     ixp1 = copy!(similar(to, Int, nx), clamp.(ceil.(Int, sx), 1, nx))
