@@ -9,7 +9,8 @@ end
 """
     SimulationBuffers
 
-Everything one simulation run needs, in one place: the [`PhaseBuffers`](@ref) with its output block
+Everything one simulation run needs, in one place: the phase sampler ([`PhaseBuffers`](@ref) or
+[`SavedPhaseReader`](@ref)) with its output block
 `phases` and, when imaging is enabled, the [`OpticalBuffers`](@ref), the [`ImagingPlan`](@ref), the PSF
 block `psf` and the output image block `images`.
 
@@ -17,7 +18,7 @@ Internal to the simulation loop -- the pieces are separately usable on their own
 threading them through `simulation_run`. `optical_buffers`, `img_plan`, `psf` and `images` are
 `nothing` for a phases-only run.
 
-Constructors: `SimulationBuffers(pb::PhaseBuffers)` for a phases-only run, and
+Constructors: `SimulationBuffers(pb)` (a `PhaseBuffers` or `SavedPhaseReader`) for a phases-only run, and
 `SimulationBuffers(T, atm_spec, img_spec; batch, deviceadapter)` for imaging with output element
 type `T`. In the latter the phase plate is padded beyond the aperture so that the wind shift over the
 exposure fits, its grid step is `img_spec.grid_step`, and the plan is adapted to `deviceadapter`.

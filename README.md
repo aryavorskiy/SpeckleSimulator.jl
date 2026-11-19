@@ -36,10 +36,10 @@ using AtmosphericTurbulenceSimulator
 
 # Define circular aperture and imaging parameters
 ap = CircularAperture((64, 64))
-img_spec = ImagingSpec(ap, 2m, PhotonCount(1e6, 100))
+img_spec = ImagingSpec(ap, 2m, ReadoutSpec(1e6, 100))
 
 # Atmosphere specification
-atm = SingleLayer(0.2m, interpolate=:auto)
+atm = SingleLayer(0.2m)
 
 # True sky models:
 # Point source

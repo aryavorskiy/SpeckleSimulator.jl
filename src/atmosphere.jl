@@ -460,13 +460,14 @@ function samplephases!(out, reader::SavedPhaseReader, α=true)
 end
 
 """
-    PhaseBuffers(atm_spec::AtmosphereSpec, plate_size[, d][; grid_step, batch, deviceadapter])
+    PhaseBuffers(atm_spec::SingleLayer, plate_size[, d][; grid_step, batch, deviceadapter])
 
 Everything needed to draw batches of phase screens. Owns no output array — allocate one with
-[`allocate_phases`](@ref) and pass it to [`samplephases!`](@ref).
+`allocate_phases` and pass it to [`samplephases!`](@ref).
 
-Groups a sampler ([`KarhunenLoeveSampler`](@ref) and a scratch buffer for low-resolution phase screens,
+Groups a sampler ([`KarhunenLoeveSampler`](@ref)), a scratch buffer for low-resolution phase screens,
 a [`HardingInterpolator`](@ref) for upsampling, and the additional scale factor encoding the ``r_0``.
+Saved phase screens are replayed by a [`SavedPhaseReader`](@ref) instead.
 
 # Arguments
 - `atm_spec`: an `AtmosphereSpec` describing the turbulence.

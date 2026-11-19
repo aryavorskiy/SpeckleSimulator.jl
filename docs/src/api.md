@@ -12,6 +12,11 @@ Modules = [AtmosphericTurbulenceSimulator]
 ```@autodocs
 Modules = [AtmosphericTurbulenceSimulator]
 Pages = ["atmosphere.jl"]
+Filter = t -> t !== samplephases!
+```
+
+```@docs
+samplephases!
 ```
 
 ## Imaging specifications

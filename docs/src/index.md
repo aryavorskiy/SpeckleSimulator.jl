@@ -7,7 +7,8 @@ generating image sequences for point sources, binary systems, and extended sky i
 Features include:
 - High-fidelity phase screen sampling with Kolmogorov statistics.
 - Flexible true-sky models: point sources, binary systems, user-defined images.
-- Photon-counting readout with optional background.
+- Detector readout with Poisson photon noise, background, Gaussian readout noise, bias and gain, or
+  noise-free continuous flux.
 - Non-monochromatic filters with wavelength-dependent turbulence and diffraction.
 - Long-exposure simulations with wind-driven phase screen evolution.
 - [Unitful.jl](https://github.com/PainterQubits/Unitful.jl) support: physical quantities can be specified in fitting units (e.g. `0.2m`, `550nm`, `0.5s`).
@@ -40,8 +41,8 @@ images.
 using AtmosphericTurbulenceSimulator, CairoMakie
 
 aperture = CircularAperture((64, 64), 30)
-img_spec = ImagingSpec(aperture, 2, PhotonCount(1e7, 200); filter=FilterSpec(550, bandwidth=40))
-atm = SingleLayer(0.1; interpolate=:auto)
+img_spec = ImagingSpec(aperture, 2, ReadoutSpec(1e7, 200); filter=FilterSpec(550, bandwidth=40))
+atm = SingleLayer(0.1; harding=(; nsteps=:auto))
 
 result = simulate_images(atm, img_spec; n=8)
 
@@ -75,7 +76,7 @@ grid step directly, which is the physical size of one pixel of the wavefront and
 units as ``r_0``.
 
 For large grids, [`SingleLayer`](@ref) can use Harding interpolation ([Harding et al. 1999](https://doi.org/10.1364/AO.38.002161)). 
-The phase is sampled on a smaller grid and then upsampled in a way that preserves Kolmogorov statistics. `interpolate=:auto`
+The phase is sampled on a smaller grid and then upsampled in a way that preserves Kolmogorov statistics. `harding=(; nsteps=:auto)`
 selects a coarse grid size based on the default heuristic.
 
 You can also replay phase screens from a dataset or an array using the [`SavedPhases`](@ref)
@@ -88,7 +89,7 @@ broadband simulations.
 The parameters of the imaging system are defined by an [`ImagingSpec`](@ref) object, which includes the following fields:
 - The aperture function, which can be a predefined shape like [`CircularAperture`](@ref) or a user-defined array.
 - The aperture diameter `d`, in the same units as ``r_0`` in the atmosphere model (Unitful length or plain number).
-- The photon budget, defined by a [`PhotonCount`](@ref) object that specifies the total number of photons and background level.
+- The photon budget and readout, defined by a [`ReadoutSpec`](@ref) object that specifies the total number of photons, the background level, and the readout noise, bias and gain of the detector. `ReadoutSpec(Inf)` gives noise-free continuous flux.
 - The filter specification, defined by a [`FilterSpec`](@ref) that sets the wavelengths and relative intensities for non-monochromatic simulations.
 - The exposure time, which can be used to simulate long exposures by averaging multiple phase screens together. See [`Exposure`](@ref).
 
@@ -115,7 +116,7 @@ string macro are re-exported, so you can attach units directly:
 
 ```julia
 atm = SingleLayer(0.2m; base_wavelength=550nm, wind_velocity=(4m/s, 4m/s))
-img_spec = ImagingSpec(CircularAperture((64, 64)), 2m, PhotonCount(1e7, 200);
+img_spec = ImagingSpec(CircularAperture((64, 64)), 2m, ReadoutSpec(1e7, 200);
     filter=FilterSpec(550nm; bandwidth=40nm), exposure=Exposure(0.5s, 10))
 ```
 
@@ -148,19 +149,23 @@ speckle_viewer()
 
 ### Backends
 
-This toolchain is compatible with CPU multi-threading. By default, it uses all available threads. 
-To control the number of threads, set the `JULIA_NUM_THREADS` environment variable before starting 
-Julia, or start Julia with the `--threads` flag:
+This toolchain is compatible with CPU multi-threading. Start Julia with several threads, either by
+setting the `JULIA_NUM_THREADS` environment variable or with the `--threads` flag:
 
 ```bash
 julia --threads=auto    # use all available cores
 ```
 
-Use [`ComputeBackend`](@ref) for more fine-grained control over the CPU threading behavior, such as
-specifying the number of threads or the array type used for computations:
+By default, simulations use a single worker thread. Each batch is split into chunks processed in
+parallel by `get_num_threads()` workers; change the count with `set_num_threads`:
 
 ```julia
-simulate_images(atm, img_spec; n=100_000, file="simulation.h5", deviceadapter=ComputeBackend(nthreads=16))
+set_num_threads(16)       # use 16 workers from now on
+set_num_threads(nothing)  # use half of Threads.nthreads()
+
+set_num_threads(8) do     # use 8 workers only inside this block
+    simulate_images(atm, img_spec; n=100_000, file="simulation.h5")
+end
 ```
 
 GPU execution is also supported. To use GPU arrays, pass the appropriate device adapter, for example 
@@ -171,13 +176,12 @@ using CUDA
 simulate_images(atm, img_spec; n=100_000, file="simulation.h5", deviceadapter=CuArray)
 ```
 
-Passing an array type directly is equivalent to wrapping it in `ComputeBackend(CuArray)`, which defaults to using the array backend with one CPU thread.
-
 !!! warning
     CUDA.jl and Metal.jl are the only GPU backends tested so far. Other Julia GPU array backends may work if
     they provide the required array operations and FFT support.
 
-    Note that some of them may not support eigendecomposition on the device (pass `device_eigen=false` to the `ComputeBackend` constructor to run the eigendecomposition on the CPU instead) and require simplified photon counting (pass `gaussian_approx=true` to the `PhotonCount` constructor).
+    The eigendecomposition used for phase-screen sampling runs on the CPU when the device does not
+    support it; the result is then moved to the device.
 
 ### Batch Size
 

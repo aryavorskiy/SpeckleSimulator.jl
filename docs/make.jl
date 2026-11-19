@@ -1,5 +1,6 @@
 using Documenter
 using AtmosphericTurbulenceSimulator
+using CairoMakie
 
 ENV["GKSwstype"] = "100"
 
@@ -7,7 +8,7 @@ DocMeta.setdocmeta!(AtmosphericTurbulenceSimulator, :DocTestSetup, :(using Atmos
 
 makedocs(
     sitename = "AtmosphericTurbulenceSimulator.jl",
-    modules = [AtmosphericTurbulenceSimulator],
+    modules = [AtmosphericTurbulenceSimulator, Base.get_extension(AtmosphericTurbulenceSimulator, :MakieExt)],
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", "false") == "true",
         assets = [asset("assets/favicon-96x96.png", class=:ico, islocal=true)],
