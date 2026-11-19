@@ -48,8 +48,8 @@ Rescale `phases` in place to Fried parameter `r₀`, assuming they were generate
 
 # Arguments
 - `phases`: a `(nx, ny, nframes)` array of phase screens, modified in place.
-- `d`: aperture diameter in the same units as `r₀`. If not a square array, the largest dim
-  is used to compute the pixel scale.
+- `d`: aperture diameter in the same units as `r₀`. The first two dimensions of `phases` must be
+  equal; the pixel scale is `d / size(phases, 1)`.
 - `r₀`: target Fried parameter.
 
 # Keyword Arguments
@@ -65,8 +65,8 @@ scale_phases!(phases::AbstractArray, r₀::Number; grid_step=1) =
 const EigenType = Union{Tuple{<:Any,<:Any}, Eigen}
 
 """
-    KarhunenLoeveSampler(shape, covmat, batch)
-    KarhunenLoeveSampler(shape, (E, U), batch)
+    KarhunenLoeveSampler(shape, covmat[; batch, deviceadapter])
+    KarhunenLoeveSampler(shape, (E, U)[; batch, deviceadapter])
 
 Draw phase screens by a Karhunen-Loeve expansion of a phase covariance matrix.
 
@@ -76,10 +76,13 @@ Holds precomputed constants and scratch space only — the caller owns the outpu
 # Arguments
 - `covmat`: an `N×N` phase covariance matrix with `N == prod(shape)`, e.g. from
   [`kolmogorov_covmat`](@ref). Any symmetric covariance works, not only Kolmogorov.
-- `(E, U)`: a precomputed eigendecomposition of `covmat`. **`E` is modified in place** —
-  negative eigenvalues are clamped to zero.
+- `(E, U)`: a precomputed eigendecomposition of `covmat`.
 - `shape`: the `(nx, ny)` shape of one phase screen.
-- `batch`: number of screens drawn per [`samplephases!`](@ref) call.
+
+# Keyword Arguments
+- `batch`: number of screens drawn per [`samplephases!`](@ref) call (default `1`).
+- `deviceadapter`: storage adapter for the noise transform and the scratch buffer (default `identity`).
+  Given `covmat`, the eigendecomposition runs on the device if the adapter supports it, otherwise on the host.
 """
 struct KarhunenLoeveSampler{MT}
     shape::NTuple{2,Int}
@@ -91,8 +94,7 @@ function KarhunenLoeveSampler(sz::NTuple{2,Int}, (E, U)::EigenType; batch::Int=1
     @assert size(U) == (length(E), length(E))
     E_adapt = adapt(deviceadapter, E)
     U_adapt = adapt(deviceadapter, U)
-    E_adapt .= max.(E_adapt, zero(eltype(E_adapt)))
-    noise_transform = U_adapt .* sqrt.(E_adapt')
+    noise_transform = U_adapt .* sqrt.(max.(E_adapt', zero(eltype(E_adapt))))
     noise_buffer = similar(U_adapt, size(U, 2), batch)
     KarhunenLoeveSampler(sz, noise_transform, noise_buffer)
 end
@@ -304,21 +306,23 @@ function _harding_spec(final_size::NTuple{2,Int}; nsteps=:auto, size_from=nothin
     end
 end
 """
-    HardingInterpolator([T, ]size_to, batch[, deviceadapter]; r₀=1[, nsteps, size_from, size_heuristics=1024])
+    HardingInterpolator([T, ]size_to[; batch, deviceadapter, nsteps, size_from, size_heuristics])
 
-Upsample low-resolution phase screens to `hspec.size_to` with `hspec.nsteps` passes of Harding
-interpolation, threaded over the batch dimension.
+Upsample low-resolution phase screens to `size_to` with several passes of Harding interpolation.
+When the interpolator is constructed, the batch is split into one chunk per worker (see
+`get_num_threads()`), and the chunks are interpolated in parallel.
 
 Holds scratch buffers only — the caller owns both the input and the output; see
-[`harding_interpolate!`](@ref).
+[`harding_interpolate!`](@ref). The size of the low-resolution input is the first entry of the
+`stage_sizes` field.
 
 # Arguments
 - `T`: element type of the scratch buffers (default `Float64`).
 - `size_to`: the size of the output phase screens.
-- `batch`: number of screens interpolated per call.
-- `deviceadapter`: storage adapter for the scratch buffers.
 
 # Keyword Arguments
+- `batch`: number of screens interpolated per call (default `1`).
+- `deviceadapter`: storage adapter for the scratch buffers (default `identity`, i. e. no transform).
 - `nsteps`: number of passes of Harding interpolation. If set to `:auto`, the number of passes
   will be chosen automatically (default).
 - `size_from`: alternatively, specify the low-res grid size directly. This must be
@@ -392,15 +396,15 @@ available, an error is thrown, there is no guarantee what is in the tail of the 
 # Arguments
 - `dataset`: a 3D array-like containing phase screens with dimensions `(nx, ny, nframes)`.
   This can be an in-memory array or an HDF5 dataset (e.g. `HDF5.Dataset`).
-- `d`: aperture diameter of the saved phase screens (in the same units as ``r_0``). Optional;
-  when omitted grid step defaults to `1` (one pixel = one unit). Overriden by `grid_step`.
+- `d`: aperture diameter of the saved phase screens. Optional;
+  when omitted tries to infro from the imaging setup. Overriden by `grid_step`.
 
 # Keyword Arguments
-- `base_wavelength`: reference wavelength in nm used to scale phase screens when a multi-wavelength
-  `FilterSpec` is used (default 550 nm).
+- `base_wavelength`: reference wavelength used to scale phase screens when a multi-wavelength
+  `FilterSpec` is used. A Unitful length; a plain number is assumed to be nanometers (default 550 nm).
 - `wind_velocity`: two-component `(vx, vy)` wind velocity used for long-exposure offsets in
   imaging simulations (default `(0, 0)`).
-- `grid_step`: physical size of one aperture pixel in the same units as ``r_0``. Overrides the
+- `grid_step`: physical size of one aperture pixel. Overrides the
   value derived from `d` when provided.
 """
 struct SavedPhases{T<:Real,D,WT,WL,GT} <: AtmosphereSpec{T}
@@ -426,13 +430,16 @@ end
 Replay consecutive batches of `batch` phase screens from a dataset, cropping each frame to
 `crop_indices`. Stateful: every [`samplephases!`](@ref) call advances to the next batch.
 """
-mutable struct SavedPhaseReader{BDT, CT}
+mutable struct SavedPhaseReader{BDT<:BufferedDataset, CT}
     bd::BDT
     crop_indices::CT
     batch::Int
     batch_idx::Int
 end
-SavedPhaseReader(bd, crop_indices, batch::Int) = SavedPhaseReader(bd, crop_indices, batch, 1)
+SavedPhaseReader(bd::BufferedDataset, crop_indices, batch::Int) =
+    SavedPhaseReader(bd, crop_indices, batch, 1)
+SavedPhaseReader(spec::SavedPhases, crop_indices, batch::Int) =
+    SavedPhaseReader(BufferedDataset(spec.dataset, batch), crop_indices, batch)
 plate_size(reader::SavedPhaseReader) = length.(reader.crop_indices)
 batch_length(reader::SavedPhaseReader) = reader.batch
 allocate_phases(reader::SavedPhaseReader) =
@@ -458,39 +465,25 @@ end
 Everything needed to draw batches of phase screens. Owns no output array — allocate one with
 [`allocate_phases`](@ref) and pass it to [`samplephases!`](@ref).
 
-Groups a sampler ([`KarhunenLoeveSampler`](@ref) or [`SavedPhaseReader`](@ref)), an optional
-[`HardingInterpolator`](@ref) with its low-resolution intermediate, and the ``r_0`` scale factor.
+Groups a sampler ([`KarhunenLoeveSampler`](@ref) and a scratch buffer for low-resolution phase screens,
+a [`HardingInterpolator`](@ref) for upsampling, and the additional scale factor encoding the ``r_0``.
 
 # Arguments
 - `atm_spec`: an `AtmosphereSpec` describing the turbulence.
 - `plate_size`: `(nx, ny)` size of the generated screens.
-- `d`: aperture diameter in the same units as ``r_0``, giving `grid_step = d / maximum(plate_size)`.
+- `d`: aperture diameter in the same units as ``r_0``; `plate_size`
+  must be square when `d` is used.
 
 # Keyword Arguments
 - `grid_step`: physical size of one pixel; overrides the value derived from `d`.
-- `batch`: screens per `samplephases!` call (default `$DEFAULT_BATCH`).
-- `deviceadapter`: storage adapter or for the buffers.
+- `batch`: screens per [`samplephases!`](@ref) call (default `1`).
+- `deviceadapter`: storage adapter for the buffers (default `identity`, i. e. no transform).
 """
 struct PhaseBuffers{ST, IT, LT, FT}
     sampler::ST
     interpolator::IT
     low_array::LT
     phase_scale::FT
-end
-function PhaseBuffers(spec::SavedPhases{T}, plate_size::NTuple{2,Int}, d::Maybe{Number}=nothing;
-        grid_step::Maybe{Number}=nothing, batch::Int=1, deviceadapter=identity) where T
-    grid_step_final = _resolve_grid_step(d, grid_step, plate_size, false) |> x -> isnothing(x) ? 1 : x
-    spec.grid_step !== nothing && (spec.grid_step != grid_step) && throw(ArgumentError(
-        "Saved phase dataset has grid step $(spec.grid_step), but $grid_step was requested."
-    ))
-    saved_size = size(spec.dataset)::NTuple{3,Int}
-    saved_plate_size = saved_size[1:2]
-    all(saved_plate_size .>= plate_size) || throw(ArgumentError(
-        "Saved phase dataset has plate size $saved_plate_size, but at least $plate_size was requested."
-    ))
-    crop_indices = (1:plate_size[1], 1:plate_size[2])
-    reader = SavedPhaseReader(BufferedDataset(spec.dataset, batch), crop_indices, batch)
-    return PhaseBuffers(reader, nothing, nothing, true)
 end
 function PhaseBuffers(spec::SingleLayer, plate_size::NTuple{2,Int}, d::Maybe{Number}=nothing;
         grid_step::Maybe{Number}=nothing, batch::Int=1, deviceadapter=identity)
@@ -527,14 +520,24 @@ function samplephases!(out, pb::PhaseBuffers)
     end
 end
 
-"""
-    allocate_phases(pb::PhaseBuffers[, deviceadapter])
-
-Allocate a fresh `(plate_size(pb)..., batch_length(pb))` array to draw into. `PhaseBuffers` does
-not own an output buffer, so the caller allocates — see [`samplephases!`](@ref).
-"""
 allocate_phases(pb::PhaseBuffers) =
     isnothing(pb.interpolator) || nstages(pb.interpolator) == 0 ?
         similar(allocate_phases(pb.sampler), (plate_size(pb)..., batch_length(pb))) :
         similar(pb.interpolator.work_bufs[1][1], (plate_size(pb)..., batch_length(pb)))
 samplephases(phs_sampler) = samplephases!(allocate_phases(phs_sampler), phs_sampler)
+
+function _phase_sampler(spec::SavedPhases{T}, plate_size::NTuple{2,Int}, grid_step::Number, batch::Int, _deviceadapter) where T
+    spec.grid_step !== nothing && (spec.grid_step != grid_step) && throw(ArgumentError(
+        "Saved phase dataset has grid step $(spec.grid_step), but $grid_step was requested."
+    ))
+    saved_size = size(spec.dataset)::NTuple{3,Int}
+    saved_plate_size = saved_size[1:2]
+    all(saved_plate_size .>= plate_size) || throw(ArgumentError(
+        "Saved phase dataset has plate size $saved_plate_size, but at least $plate_size was requested."
+    ))
+    crop_indices = (1:plate_size[1], 1:plate_size[2])
+    return SavedPhaseReader(spec, crop_indices, batch)
+end
+function _phase_sampler(spec::SingleLayer, plate_size::NTuple{2,Int}, grid_step::Number, batch::Int, deviceadapter)
+    return PhaseBuffers(spec, plate_size; grid_step, batch, deviceadapter)
+end

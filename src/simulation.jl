@@ -9,14 +9,22 @@ end
 """
     SimulationBuffers
 
-Everything one simulation run needs, in one place: the phase sampler and its output block, and
-(when imaging is enabled) the imaging scratch, the PSF block and the output image block.
+Everything one simulation run needs, in one place: the [`PhaseBuffers`](@ref) with its output block
+`phases` and, when imaging is enabled, the [`OpticalBuffers`](@ref), the [`ImagingPlan`](@ref), the PSF
+block `psf` and the output image block `images`.
 
 Internal to the simulation loop -- the pieces are separately usable on their own, this only saves
-threading five arguments through `simulation_run`. `image_buffers`, `psf` and `images` are
+threading them through `simulation_run`. `optical_buffers`, `img_plan`, `psf` and `images` are
 `nothing` for a phases-only run.
+
+Constructors: `SimulationBuffers(pb::PhaseBuffers)` for a phases-only run, and
+`SimulationBuffers(T, atm_spec, img_spec; batch, deviceadapter)` for imaging with output element
+type `T`. In the latter the phase plate is padded beyond the aperture so that the wind shift over the
+exposure fits, its grid step is `img_spec.grid_step`, and the plan is adapted to `deviceadapter`.
+The worker count for `optical_buffers` and the Harding interpolator is `get_num_threads()` at
+construction time.
 """
-struct SimulationBuffers{PB<:PhaseBuffers, PhT, OB, PlanT, PsfT, OutT}
+struct SimulationBuffers{PB, PhT, OB, PlanT, PsfT, OutT}
     phase_buffers::PB
     phases::PhT
     optical_buffers::OB
@@ -24,10 +32,10 @@ struct SimulationBuffers{PB<:PhaseBuffers, PhT, OB, PlanT, PsfT, OutT}
     psf::PsfT
     images::OutT
 end
-SimulationBuffers(pb::PhaseBuffers) =
+SimulationBuffers(pb) =
     SimulationBuffers(pb, allocate_phases(pb), nothing, nothing, nothing, nothing)
-function SimulationBuffers(::Type{T}, atm_spec, img_spec::ImagingSpec; batch::Int=1, deviceadapter=identity) where {T}
-    pb = PhaseBuffers(atm_spec, padded_plate_size(atm_spec, img_spec); batch, deviceadapter, img_spec.grid_step)
+function SimulationBuffers(::Type{T}, atm_spec::AtmosphereSpec, img_spec::ImagingSpec; batch::Int=1, deviceadapter=identity) where {T}
+    pb = _phase_sampler(atm_spec, padded_plate_size(atm_spec, img_spec), img_spec.grid_step, batch, deviceadapter)
     img_plan = adapt(deviceadapter, ImagingPlan(atm_spec, img_spec))
     ob = OpticalBuffers(img_plan; batch)
     SimulationBuffers(pb, allocate_phases(pb), ob, img_plan, imgbuf(ob), imgbuf(T, ob))
@@ -89,11 +97,15 @@ end
 Simulate `n` phase screens using the provided atmosphere specification and write
 the results to an HDF5 file.
 
+Harding interpolation of the batch is parallelised over `get_num_threads()` workers; change the
+count with `set_num_threads`.
+
 # Arguments
 - `atm_spec`: an `AtmosphereSpec` used to produce phase screens.
 - `plate_size`: the size of the phase screens to simulate.
-- `d`: aperture diameter of the saved phase screens (in the same units as ``r_0``). When omitted,
-  tries to infer it from `atm_spec`, throws if it is not a `SavedPhases`. Overriden by `grid_step`.
+- `d`: aperture diameter of the simulated phase screens (in the same units as ``r_0``); `plate_size`
+  must be square when it is used. When omitted and no `grid_step` is given, a `SavedPhases` spec uses its
+  own grid step (or `1` if it has none) and any other spec throws. Overriden by `grid_step`.
 
 # Keyword Arguments
 - `n`: number of phase screens to simulate.
@@ -103,8 +115,8 @@ the results to an HDF5 file.
 - `file`: output options. Can be a string (filename) or an `HDF5File` object. If set to `nothing`
     (default), no file is written and the phases are returned as an array.
 - `verbose`: show progress meter (true by default).
-- `deviceadapter`: adapter for device-backed arrays (defaults to `Array`). To use GPU arrays,
-  pass e.g. `CUDA.CuArray` here (requires CUDA.jl).
+- `deviceadapter`: adapter for device-backed arrays. To use GPU arrays, pass e.g. `CUDA.CuArray`
+    (requires CUDA.jl).
 """
 function simulate_phases(atm_spec::AtmosphereSpec, plate_size, d=nothing::Maybe{Number}; n::Int,
         grid_step::Maybe{Number}=nothing, batch::Int=DEFAULT_BATCH, file=nothing,
@@ -122,12 +134,18 @@ end
 Simulate `n` images using the provided imaging and atmosphere specifications and write
 the results to an HDF5 file.
 
+Each batch is split across `get_num_threads()` workers (one by default); change the count with
+`set_num_threads`. Phase screens are drawn on a plate padded so that the wind shift over the
+exposure fits.
+
 # Arguments
 - `T`: output image numeric type; if not provided, defaults to `Int` for finite-photon
-    simulations (determined by `img_spec.readout_spec.nphotons`) and `Float64` for infinite-photon models.
+    simulations (determined by `img_spec.readout_spec.nphotons`) and to the number type of `img_spec`
+    (that of its aperture) for infinite-photon models.
 - `true_sky`: a `TrueSky` model (e.g. `PointSource`, `DoubleSystem`, `TrueSkyImage`).
 - `atm_spec`: an `AtmosphereSpec` used to produce phase screens.
-- `img_spec`: an `ImagingSpec` describing the aperture, image size, photon budget, readout and filter.
+- `img_spec`: an [`ImagingSpec`](@ref) describing the aperture and its grid step, readout, filter, exposure and
+    image size.
 
 # Keyword Arguments
 - `n`: number of images to simulate.
@@ -137,7 +155,7 @@ the results to an HDF5 file.
 - `verbose`: show progress meter (true by default).
 - `savephases`: when true (default), the sampled phase screens are saved in the HDF5 in dataset with
   key `"phases"`.
-- `deviceadapter`: adapter for device-backed arrays. To use GPU
+- `deviceadapter`: adapter for device-backed arrays (default `identity`, i. e. no transform). To use GPU
   arrays, pass e.g. `CUDA.CuArray` here (requires CUDA.jl).
 """
 function simulate_images(::Type{T}, true_sky::TrueSky, atm_spec::AtmosphereSpec, img_spec::ImagingSpec;

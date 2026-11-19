@@ -88,7 +88,7 @@ Performs bilinear interpolation of `from` onto `to` using the precomputed `inter
 - `to`: output array to be filled with interpolated values.
 - `from`: input array to be interpolated.
 - `interp`: a `BilinearInterpolator` object containing precomputed indices and weights.
-- `α` and `β`: oprtional scaling factors for the output. If provided, the output is computed
+- `α` and `β`: optional scaling factors for the output. If provided, the output is computed
   as `to = α * interpolate(from) + β * to`. Can be scalar or array of the same size as `to`.
 - `g` and `h`: optional functions applied to the input after and before interpolation, respectively.
 """
@@ -254,10 +254,13 @@ const FilterSpecType{T} = FilterSpec{<:Union{T, Quantity{T}}, <:Union{T, Quantit
 """
     ImagingSpec
 
-Container for the imaging system configuration. It is defined by the telescope `aperture`, the
-source brightness via `readout_spec`, an optional spectral `filter_spec`, the `exposure`,
+Container for the imaging system configuration. Fields: the telescope `aperture`, the `grid_step`
+(physical size of one aperture pixel, in the same units as ``r_0``), the [`ReadoutSpec`](@ref)
+`readout_spec` describing the photon budget and readout, the spectral `filter_spec`, the `exposure`,
 and the output `img_size`.
 If `img_size` does not match the aperture’s Nyquist grid, the aperture is zero-padded accordingly.
+
+Build it with the `ImagingSpec(aperture, d, ...)` constructor.
 """
 struct ImagingSpec{T, T2, AT<:AbstractMatrix{T}, FST<:FilterSpec}
     aperture::AT
@@ -279,15 +282,18 @@ struct ImagingSpec{T, T2, AT<:AbstractMatrix{T}, FST<:FilterSpec}
 end
 
 """
-    ImagingSpec([T, ]aperture, d, [readout_spec][; grid_step, filter, nyquist_oversample, img_size])
+    ImagingSpec([T, ]aperture[, d][, readout_spec][; grid_step, filter, exposure, nyquist_oversample, img_size])
 
 Create an imaging system specification.
 
 # Arguments
 - `T`: desired number type, inferred from `aperture` if not provided.
 - `aperture`: 2D aperture (pupil) array describing the telescope pupil.
-- `d`: aperture diameter in the same units as ``r_0`` (e.g. `2m`). Used to compute `grid_step`.
-- `readout_spec`: `ReadoutSpec` instance describing the readout. Default is no readout.
+- `d`: aperture diameter in the same units as ``r_0`` (e.g. `2m`). Used to compute
+  `grid_step = d / size(aperture, 1)`, which requires a square `aperture`. May be `nothing` if
+  `grid_step` is given.
+- `readout_spec`: [`ReadoutSpec`](@ref) instance describing the photon budget and readout.
+  Defaults to `ReadoutSpec(Inf)` (continuous flux, no noise).
 
 # Keyword Arguments
 - `filter`: `FilterSpec` describing sampled wavelengths and their relative intensities.
@@ -298,6 +304,8 @@ Create an imaging system specification.
   Defaults to 1. Ignored if `img_size` is provided.
 - `img_size`: explicit output image size `(nx, ny)`. If not provided, computed from aperture size
   and `nyquist_oversample`.
+- `grid_step`: physical size of one aperture pixel in the same units as ``r_0``. Overrides the value
+  derived from `d`.
 """
 function ImagingSpec(aperture::AbstractMatrix{T}, d::Maybe{Number}, readout_spec::ReadoutSpec=ReadoutSpec(Inf);
         filter::FilterSpec=FilterSpec(DEFAULT_WAVELEN),
@@ -305,11 +313,13 @@ function ImagingSpec(aperture::AbstractMatrix{T}, d::Maybe{Number}, readout_spec
         img_size::NTuple{2,Int}=round.(Int, size(aperture) .* 2 .* nyquist_oversample),
         grid_step::Maybe{Number}=nothing) where T<:Real
     grid_step_final = _resolve_grid_step(d, grid_step, aperture)
-    pc = convert_numtype(T, readout_spec)
+    rs = convert_numtype(T, readout_spec)
     ex = exposure isa Number ? Exposure(exposure) : exposure
     ft = FilterSpec(convert_numtype(T, filter.wavelengths), convert_numtype(T, filter.intensities))
-    return ImagingSpec(aperture, grid_step_final, pc, ft, ex, img_size)
+    return ImagingSpec(aperture, grid_step_final, rs, ft, ex, img_size)
 end
+ImagingSpec(aperture::AbstractMatrix, readout_spec::ReadoutSpec; kw...) =
+    ImagingSpec(aperture, nothing, readout_spec; kw...)
 ImagingSpec(::Type{T}, aperture::AbstractMatrix, args...; kw...) where T<:Real =
     ImagingSpec(convert.(T, aperture), args...; kw...)
 
@@ -330,8 +340,8 @@ per sampled wavelength, and `psf_norm`.
 
 Holds no scratch and no output, so it is shared read-only by every worker -- the per-wavelength
 interpolation tables exist once per run rather than once per thread. Built on the host; `adapt` it
-to a device when constructing [`ImageBuffers`](@ref), not here. `length(offsets)` is folded into
-`psf_norm`, so a standalone [`readout!`](@ref) needs no extra divisor.
+to a device before passing it to [`compute_psf!`](@ref) together with an [`OpticalBuffers`](@ref).
+`length(offsets)` is folded into `psf_norm`, which [`compute_psf!`](@ref) divides by.
 """
 struct ImagingPlan{ST<:ImagingSpec, WT, OT, CT, FT<:Real}
     spec::ST
@@ -372,10 +382,11 @@ plate_size(plan::ImagingPlan) = plate_size(plan.spec)
 
 """
     FilterChannel(interpolator, phs_factor, weight)
+    FilterChannel(aperture, lambda_rel, inten[, imgsize])
 
 One sampled wavelength of the filter bandpass, bundling the three quantities derived from it:
-the plate-scale `interpolator` ([`BilinearScale`](@ref)), the phase scaling `phs_factor`
-(``λ_w / λ_{base}``) and the intensity `weight`. They are carried together because
+the plate-scale `interpolator` (a `BilinearInterpolator` built by `BilinearScale`), the phase scaling
+`phs_factor` (``λ_{base} / λ_w``) and the intensity `weight`. They are carried together because
 all three come from the same wavelength -- keeping them apart meant recomputing the weight in the
 innermost loop.
 """
@@ -389,17 +400,31 @@ adapt_structure(to, interp::BilinearInterpolator) = BilinearInterpolator(
     adapt(to, interp.tx), adapt(to, interp.ty), interp.can_ff)
 adapt_structure(to, ch::FilterChannel) =
     FilterChannel(adapt(to, ch.interpolator), ch.phs_factor, ch.weight)
-FilterChannel(aperture::AbstractArray, lambda_rel, inten, imgsize = (size(aperture, 1), size(aperture, 2))) =
+FilterChannel(aperture::AbstractArray, lambda_rel, inten, imgsize = size(aperture)[1:2]) =
     FilterChannel(BilinearScale(aperture, lambda_rel, imgsize), 1 / lambda_rel, inten / lambda_rel^2)
 
 """
-    OpticalBuffers(plan::ImagingPlan, batch)
-    OpticalBuffers(pupil_buffer)
+    OpticalBuffers(plan::ImagingPlan[; batch, nthreads])
+    OpticalBuffers(spec::ImagingSpec[; batch, nthreads])
+    OpticalBuffers(img_array[, size][; batch, nthreads])
 
-Per-worker scratch for the optical pipeline: two complex `(img_size..., batch)` buffers and the
-FFT plan over them. Nothing else -- the per-wavelength constants live in [`ImagingPlan`](@ref) and
-the PSF accumulator and readout image are supplied by the caller, see [`compute_psf!`](@ref) and
-[`readout!`](@ref).
+Scratch for the optical pipeline: two complex `(img_size..., batch)` buffers and the FFT plans over
+them. Nothing else -- the per-wavelength constants live in [`ImagingPlan`](@ref) and the PSF
+accumulator and readout image are supplied by the caller, see [`compute_psf!`](@ref).
+
+The batch is split into at most `nthreads` contiguous chunks, each with its own FFT plan. Functions
+that take an `OpticalBuffers` process the chunks in parallel; with a single chunk they run directly.
+
+# Arguments
+- `plan`, `spec`: the buffers have size `spec.img_size` and are allocated like `spec.aperture`.
+- `img_array`: an array whose storage type and element type the buffers follow; `size` is the
+  `(nx, ny)` size of the buffers (defaults to the first two dimensions of `img_array`).
+- `pupil_buffer`: a preallocated complex `(nx, ny, batch)` array to use as the pupil buffer.
+
+# Keyword Arguments
+- `batch`: number of frames processed per call (default `1`). Not accepted by the `pupil_buffer`
+  method, where the batch is the third dimension of the array.
+- `nthreads`: maximum number of worker threads (default `get_num_threads()`).
 """
 struct OpticalBuffers{MT, PT, CT}
     pupil_buffer::MT
@@ -426,7 +451,7 @@ function OpticalBuffers(pupil_buffer::AbstractArray{<:Complex, 3}; nthreads::Int
     fftplans = [plan_fft(view(pupil_buffer, :, :, zs), (1, 2)) for zs in chunk_ranges]
     OpticalBuffers(pupil_buffer, similar(pupil_buffer), fftplans, chunk_ranges)
 end
-OpticalBuffers(img_array::AbstractArray, sz::Tuple=size(img_array)[1:2]; batch::Int=1, kw...) =
+OpticalBuffers(img_array::AbstractArray, sz::Tuple=size(img_array)[1:2]; batch::Int=size(img_array, 3), kw...) =
     OpticalBuffers(similar(img_array, complex(eltype(img_array)), sz..., batch); kw...)
 OpticalBuffers(spec::ImagingSpec; kw...) =
     OpticalBuffers(spec.aperture, spec.img_size; kw...)
@@ -452,10 +477,15 @@ backward_pass!(buf::OpticalBuffers, center=true) =  maybethreads(buf) do bufview
 end
 
 """
-    phases_to_pupil!(pupil, phases, aperture, offset, phs_factor)
+    phases_to_pupil!(pupil, phases, aperture[, offset, phs_factor])
+    phases_to_pupil!(bufs::OpticalBuffers, phases, aperture[, offset, phs_factor])
 
 Write the complex pupil field `aperture * cis(phase * phs_factor)` into `pupil`, zero-padded to
 the image grid and sampled at the wind `offset`.
+
+`offset` is the `(ox, oy)` shift in pixels (default `(0, 0)`); `phs_factor` multiplies the phases
+(default `true`, i.e. no scaling). The `OpticalBuffers` method writes into `bufs.pupil_buffer`,
+processing chunks of the batch in parallel.
 """
 function phases_to_pupil!(pupil::AbstractArray, phases, aperture, offset::Tuple=(0, 0), phs_factor=true)
     M, N = size(aperture)
@@ -473,8 +503,9 @@ end
 """
     pupil_to_psf!(psf, bufs::OpticalBuffers, ch::FilterChannel[, α, β])
 
-Propagate the pupil field currently in `bufs` to the focal plane and **accumulate** its intensity
-into `psf`, rescaled to `ch`'s plate scale and weighted by `α * ch.weight`. Does not zero `psf`.
+Propagate the pupil field currently in `bufs` to the focal plane and write its intensity into `psf`,
+rescaled to `ch`'s plate scale: `psf = α * ch.weight * intensity + β * psf`. With the default
+`β = false` this overwrites `psf`; pass `β = true` to accumulate.
 """
 pupil_to_psf!(psf, buf::OpticalBuffers, ch::FilterChannel, α=true, β=false) = maybethreads(buf) do bufview, zs
     forward_pass!(bufview)
@@ -484,9 +515,10 @@ end
 """
     compute_psf!(psf, bufs::OpticalBuffers, plan::ImagingPlan, phases[, α, β])
 
-Accumulate the (unnormalised) point-spread function over every exposure offset and wavelength:
-`psf = α * PSF(phases) + β * psf`. Divide by `plan.psf_norm` for a flux-normalised PSF, or hand
-it to [`readout!`](@ref).
+Accumulate the point-spread function over every exposure offset and wavelength:
+`psf = α * PSF(phases) + β * psf`. Each contribution is already divided by `plan.psf_norm`, so the
+result can be passed to `apply_truesky!` and `readout!` as is. `phases` is an `(nx, ny, batch)` array
+with the batch length of `bufs`; the batch is processed in parallel chunks, see [`OpticalBuffers`](@ref).
 """
 compute_psf!(psf, bufs::OpticalBuffers, plan::ImagingPlan, phases, α=true, β=false) = maybethreads(bufs) do bufview, zs
     firstiter = true
@@ -501,7 +533,9 @@ end
 """
     apply_truesky!(psf, true_sky[, bufs::OpticalBuffers])
 
-Convolve `psf` in place with a [`TrueSky`](@ref) brightness model, using `bufs` as scratch.
+Convolve `psf` in place with a true-sky brightness model (`PointSource`, `DoubleSystem` or
+[`TrueSkyImage`](@ref)). `bufs` is the scratch used for `TrueSkyImage`; when passed, the batch is
+processed in parallel chunks, so it must have the same batch length as `psf`.
 """
 function apply_truesky!(psf, ts::TrueSkyImage, opt_buffer::OpticalBuffers=OpticalBuffers(psf))
     copyto!(opt_buffer.pupil_buffer, psf)

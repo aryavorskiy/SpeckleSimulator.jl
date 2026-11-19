@@ -6,6 +6,33 @@ using AtmosphericTurbulenceSimulator, Makie, Unitful
 # (e.g. "50 cm/s" instead of "50 cm s⁻¹").
 slashfmt(q) = replace(string(q), r" (\S+?)⁻¹" => s"/\1")
 
+"""
+    speckle_viewer([T]; kwargs...)
+
+Open an interactive Makie window showing a simulated phase screen and the speckle image it
+produces. Controls are split into two columns:
+
+- **Atmosphere**: sliders for the Fried parameter ``r_0`` and the wind speed (direction fixed
+  horizontal), plus a *New phase* button that draws a fresh random phase screen and a *Remove tip/tilt* button that
+  subtracts the best-fit tilt from the current screen.
+- **Imaging**: sliders for the central wavelength, filter bandwidth and exposure time.
+
+The phase screen is recomputed only when an atmosphere control changes (or the button is pressed);
+the speckle image is recomputed on any control change. A fixed circular aperture is used.
+
+# Arguments
+- `T`: number type used for the simulation (default `Float64`).
+
+# Keyword Arguments
+- `wavelength_range`: central-wavelength slider values (Unitful length; default nm).
+- `bw_range`: filter-bandwidth slider values (Unitful length; default nm).
+- `exptime_range`: exposure-time slider values (Unitful time; default s).
+- `r0_range`: Fried-parameter slider values (Unitful length; default cm).
+- `wind_range`: wind-speed slider values (Unitful velocity; default cm/s).
+- `d`: aperture diameter (Unitful length; default `2m`).
+- `aperture`: aperture array (defaults to 64×64 circular aperture).
+- `deviceadapter`: adapter for device-backed arrays, passed to the simulation (default `identity`).
+"""
 function AtmosphericTurbulenceSimulator.speckle_viewer(::Type{T}=Float64;
         wavelength_range = (550:10:750)nm,
         bw_range = (0:10:100)nm,
