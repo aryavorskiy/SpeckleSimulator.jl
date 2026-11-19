@@ -526,8 +526,8 @@ allocate_phases(pb::PhaseBuffers) =
         similar(pb.interpolator.work_bufs[1][1], (plate_size(pb)..., batch_length(pb)))
 samplephases(phs_sampler) = samplephases!(allocate_phases(phs_sampler), phs_sampler)
 
-function _phase_sampler(spec::SavedPhases{T}, plate_size::NTuple{2,Int}, grid_step::Number, batch::Int, _deviceadapter) where T
-    spec.grid_step !== nothing && (spec.grid_step != grid_step) && throw(ArgumentError(
+function _phase_sampler(spec::SavedPhases{T}, plate_size::NTuple{2,Int}, grid_step::Maybe{Number}, batch::Int, _deviceadapter) where T
+    spec.grid_step !== nothing && grid_step !== nothing && spec.grid_step != grid_step && throw(ArgumentError(
         "Saved phase dataset has grid step $(spec.grid_step), but $grid_step was requested."
     ))
     saved_size = size(spec.dataset)::NTuple{3,Int}

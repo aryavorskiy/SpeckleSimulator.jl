@@ -1,4 +1,4 @@
-import AtmosphericTurbulenceSimulator: prepare_buffers, isfinite_photons, convert_numtype,
+import AtmosphericTurbulenceSimulator: isfinite_photons, convert_numtype,
     nstages, plate_size
 using Unitful
 
@@ -19,18 +19,18 @@ using Unitful
         @test unit(atm32.r₀) == m
 
         # Test Harding interpolation
-        hi = HardingInterpolator((64, 64), 4; nsteps=:auto)
+        hi = HardingInterpolator((64, 64); batch=4, nsteps=:auto)
         @test nstages(hi) == 2
         @test plate_size(hi) == (64, 64)
         @test first(hi.stage_sizes) == (25, 25)
 
-        hi_1pass = HardingInterpolator((64, 64), 4; nsteps=1)
+        hi_1pass = HardingInterpolator((64, 64); batch=4, nsteps=1)
         @test nstages(hi_1pass) == 1
         @test plate_size(hi_1pass) == (64, 64)
         @test first(hi_1pass.stage_sizes) == (38, 38)
 
         # Test that small size_from throws error
-        @test_throws ArgumentError HardingInterpolator((64, 64), 4; size_from=(8, 8))
+        @test_throws ArgumentError HardingInterpolator((64, 64); batch=4, size_from=(8, 8))
     end
 
     @testset "SavedPhases" begin
@@ -96,37 +96,37 @@ using Unitful
 
     @testset "ImagingSpec" begin
         ap = CircularAperture((32, 32), 15)
-        img_spec = ImagingSpec(ap, 32, PhotonCount(Inf))
+        img_spec = ImagingSpec(ap, 32, ReadoutSpec(Inf))
         @test size(img_spec.aperture) == (32, 32)
         @test img_spec.img_size == (64, 64)
         @test img_spec.grid_step == 1
 
-        img_spec_custom = ImagingSpec(ap, 32, PhotonCount(Inf); nyquist_oversample=1.5)
+        img_spec_custom = ImagingSpec(ap, 32, ReadoutSpec(Inf); nyquist_oversample=1.5)
         @test img_spec_custom.img_size == (96, 96)
 
-        img_spec = ImagingSpec(ap, 1m, PhotonCount(Inf))
+        img_spec = ImagingSpec(ap, 1m, ReadoutSpec(Inf))
         @test img_spec.grid_step == 1m / size(ap, 1)
 
         # Test with filter
-        img_spec_filter = ImagingSpec(ap, 32, PhotonCount(1e6, 10); filter=FilterSpec(500.0; bandwidth=100.0))
+        img_spec_filter = ImagingSpec(ap, 32, ReadoutSpec(1e6, 10); filter=FilterSpec(500.0; bandwidth=100.0))
         @test img_spec_filter.filter_spec.wavelengths[end÷2+1] == 500nm
-        @test img_spec_filter.photon_count.nphotons == 1e6
-        @test img_spec_filter.photon_count.background == 10
+        @test img_spec_filter.readout_spec.nphotons == 1e6
+        @test img_spec_filter.readout_spec.background == 10
 
-        @test_throws ArgumentError ImagingSpec(ap, PhotonCount(1e6))
+        @test_throws ArgumentError ImagingSpec(ap, ReadoutSpec(1e6))
     end
 
-    @testset "PhotonCount" begin
-        pc_inf = PhotonCount(Inf)
+    @testset "ReadoutSpec" begin
+        pc_inf = ReadoutSpec(Inf)
         @test !isfinite_photons(pc_inf)
         @test pc_inf.background == 0.0
 
-        pc = PhotonCount(1e6, 100.0)
+        pc = ReadoutSpec(1e6, 100.0)
         @test isfinite_photons(pc)
         @test convert_numtype(Float32, pc).nphotons ≈ Float32(1e6)
 
         # Finite nphotons without background must throw
-        @test_throws ArgumentError PhotonCount(1e6)
+        @test_throws ArgumentError ReadoutSpec(1e6)
     end
 
     @testset "Exposure" begin
@@ -156,30 +156,18 @@ using Unitful
         @test any(x -> 0.0 < x < 1.0, ap_aa)
     end
 
-    @testset "ComputeBackend constructors" begin
-        cb1 = ComputeBackend(identity, 2, true)
-        @test cb1.nthreads == 2
-        @test cb1.adapter === identity
-        @test cb1.device_eigen
-
-        cb2 = ComputeBackend(Array, 3, false)
-        @test cb2.adapter === Val(Array)
-        @test cb2.nthreads == 3
-        @test !cb2.device_eigen
-
-        cb_default = ComputeBackend()
-        @test cb_default.nthreads == Threads.nthreads()
-        @test cb_default.device_eigen
-
-        cb_kw = ComputeBackend(nthreads=4, device_eigen=false)
-        @test cb_kw.nthreads == 4
-        @test cb_kw.adapter === identity
-        @test !cb_kw.device_eigen
-
-        cb_arr = ComputeBackend(Array)
-        @test cb_arr.adapter === Val(Array)
-        @test cb_arr.nthreads == 1
-        @test cb_arr.device_eigen
+    @testset "num_workers" begin
+        @test get_num_threads() == 1
+        set_num_threads(nothing)
+        @test get_num_threads() == max(Threads.nthreads() ÷ 2, 1)
+        set_num_threads(3)
+        @test get_num_threads() == 3
+        set_num_threads(1) do
+            @test get_num_threads() == 1
+        end
+        set_num_threads(nothing) do
+            @test get_num_threads() == max(Threads.nthreads() ÷ 2, 1)
+        end
     end
 
     @testset "TrueSky models" begin
@@ -204,38 +192,26 @@ using Unitful
         @test eltype(ts_img_f32.true_sky_fft) == ComplexF32
     end
 
-    @testset "SimulationBuffers" begin
+    @testset "ImagingPlan" begin
         ap = CircularAperture((16, 16))
-        img_spec = ImagingSpec(ap, 16, PhotonCount(1e6, 100))
+        img_spec = ImagingSpec(ap, 16, ReadoutSpec(1e6, 100))
         atm = SingleLayer(5.0)
 
-        img_buf_serial = prepare_buffers(Int32, atm, img_spec, 5, Array)[2]
-        @test img_buf_serial isa AtmosphericTurbulenceSimulator.SimulationBuffers
-        @test length(img_buf_serial.opt_bufs) == 1
-        @test length(img_buf_serial.offsets) == 1
-        @test img_buf_serial.offsets[1].can_ff
+        img_plan = ImagingPlan(atm, img_spec)
+        @test img_plan.offsets == [(0, 0)]
 
-        img_buf_parallel = prepare_buffers(Int32, atm, img_spec, 5, ComputeBackend(nthreads=2))[2]
-        @test img_buf_parallel isa AtmosphericTurbulenceSimulator.SimulationBuffers
-        @test length(img_buf_parallel.opt_bufs) == 2
-        @test sum(length, img_buf_parallel.chunk_ranges) == 5
-        @test length(img_buf_parallel.offsets) == 1
-        @test img_buf_parallel.offsets[1].can_ff
-
-        img_spec2 = ImagingSpec(ap, 16, PhotonCount(1e6, 100); exposure=Exposure(0.1, 10))
-        img_buf2 = prepare_buffers(Int32, atm, img_spec2, 5, Array)[2]
-        @test length(img_buf2.offsets) == 1
-        @test img_buf2.offsets[1].can_ff
+        img_spec2 = ImagingSpec(ap, 16, ReadoutSpec(1e6, 100); exposure=Exposure(0.1, 10))
+        img_plan2 = ImagingPlan(atm, img_spec2)
+        @test img_plan2.offsets == [(0, 0)]
 
         atm2 = SingleLayer(5.0; harding=(; nsteps=:auto), wind_velocity=(10.0, 5.0))
-        img_buf3 = prepare_buffers(Int32, atm2, img_spec2, 5, Array)[2]
-        @test length(img_buf3.offsets) == 10
-        @test img_buf3.offsets[1].can_ff
-        @test !img_buf3.offsets[2].can_ff
+        img_plan3 = ImagingPlan(atm2, img_spec2)
+        @test length(img_plan3.offsets) == 10
+        @test img_plan3.offsets[1] == (0, 0)
+        @test img_plan3.offsets[2] != (0, 0)
 
-        img_spec3 = ImagingSpec(ap, 16, PhotonCount(1e6, 100); exposure=Exposure(0, 10))
-        img_buf4 = prepare_buffers(Int32, atm2, img_spec3, 5, Array)[2]
-        @test length(img_buf4.offsets) == 1
-        @test img_buf4.offsets[1].can_ff
+        img_spec3 = ImagingSpec(ap, 16, ReadoutSpec(1e6, 100); exposure=Exposure(0, 10))
+        img_plan4 = ImagingPlan(atm2, img_spec3)
+        @test img_plan4.offsets == [(0, 0)]
     end
 end

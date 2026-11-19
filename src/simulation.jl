@@ -120,10 +120,10 @@ count with `set_num_threads`.
 """
 function simulate_phases(atm_spec::AtmosphereSpec, plate_size, d=nothing::Maybe{Number}; n::Int,
         grid_step::Maybe{Number}=nothing, batch::Int=DEFAULT_BATCH, file=nothing,
-        verbose=true, deviceadapter=Array)
+        verbose=true, deviceadapter=identity)
     batch = min(batch, n)
-    phase_buffers = PhaseBuffers(atm_spec, plate_size, d;
-        grid_step=grid_step, batch=batch, deviceadapter=deviceadapter)
+    grid_step_resolved = _resolve_grid_step(d, grid_step, plate_size, !(atm_spec isa SavedPhases))
+    phase_buffers = _phase_sampler(atm_spec, plate_size, grid_step_resolved, batch, deviceadapter)
     simulation_run(file, SimulationBuffers(phase_buffers), nothing, n; verbose=verbose)
 end
 

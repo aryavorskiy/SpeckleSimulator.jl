@@ -57,7 +57,9 @@
             phases2 = simulate_phases(atm, (4, 5); n=3, verbose=false)
             @test phases2[:, :, 1:3] == data[1:4, 1:5, 1:3]
 
-            atm2 = SavedPhases(fid["phases"], 7; base_wavelength=500.0)
+            @test_throws ArgumentError SavedPhases(fid["phases"], 7)
+
+            atm2 = SavedPhases(fid["phases"]; grid_step=1, base_wavelength=500.0)
             @test atm2.base_wavelength == 500.0u"nm"
             @test_throws ArgumentError simulate_phases(atm2, (6, 7), 8; n=1, verbose=false)
         end
