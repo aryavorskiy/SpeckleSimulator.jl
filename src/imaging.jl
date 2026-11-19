@@ -1,4 +1,4 @@
-using LinearAlgebra, FFTW, Distributions, HDF5, ProgressMeter, ChunkSplitters
+using ChunkSplitters, Distributions, FFTW, HDF5, LinearAlgebra, ProgressMeter
 import Adapt: adapt, adapt_storage, adapt_structure
 
 """
@@ -79,6 +79,10 @@ function BilinearShift(to::AbstractArray, offset::NTuple{2}, sz=(size(to, 1), si
     ty = convert(real(eltype(to)), offset[2] - floor(offset[2]))
     return BilinearInterpolator(ix, iy, ixp1, iyp1, tx, ty, all(isinteger, offset))
 end
+adapt_structure(to, interp::BilinearInterpolator) = BilinearInterpolator(
+    adapt(to, interp.ix), adapt(to, interp.iy), adapt(to, interp.ixp1), adapt(to, interp.iyp1),
+    adapt(to, interp.tx), adapt(to, interp.ty), interp.can_ff)
+
 """
     bilinear_interpolate!(to, from, interp[, α, β, g, h])
 
@@ -395,9 +399,6 @@ struct FilterChannel{IT<:BilinearInterpolator, T}
     phs_factor::T
     weight::T
 end
-adapt_structure(to, interp::BilinearInterpolator) = BilinearInterpolator(
-    adapt(to, interp.ix), adapt(to, interp.iy), adapt(to, interp.ixp1), adapt(to, interp.iyp1),
-    adapt(to, interp.tx), adapt(to, interp.ty), interp.can_ff)
 adapt_structure(to, ch::FilterChannel) =
     FilterChannel(adapt(to, ch.interpolator), ch.phs_factor, ch.weight)
 FilterChannel(aperture::AbstractArray, lambda_rel, inten, imgsize = size(aperture)[1:2]) =
@@ -463,17 +464,17 @@ imgbuf(::Type{T}, buf::OpticalBuffers) where T =
     similar(buf.pupil_buffer, T)
 imgbuf(buf::OpticalBuffers) = imgbuf(real(eltype(buf.pupil_buffer)), buf)
 
-_fft_pass!(to, plan, from, center=true) = if center
+_fft_pass!(to, plan, from, center::Bool=true) = if center
     ifftshift!(to, from, (1, 2))
     mul!(from, plan, to)
     fftshift!(to, from, (1, 2))
 else
     mul!(to, plan, from)
 end
-forward_pass!(buf::OpticalBuffers, center=true) = maybethreads(buf) do bufview, _
+forward_pass!(buf::OpticalBuffers, center::Bool=true) = maybethreads(buf) do bufview, _
     _fft_pass!(bufview.focal_buffer, only(bufview.fftplans), bufview.pupil_buffer, center)
 end
-backward_pass!(buf::OpticalBuffers, center=true) =  maybethreads(buf) do bufview, _
+backward_pass!(buf::OpticalBuffers, center::Bool=true) =  maybethreads(buf) do bufview, _
     _fft_pass!(bufview.pupil_buffer, inv(only(bufview.fftplans)), bufview.focal_buffer, center)
 end
 
@@ -510,7 +511,7 @@ rescaled to `ch`'s plate scale: `psf = α * ch.weight * intensity + β * psf`. W
 """
 pupil_to_psf!(psf, buf::OpticalBuffers, ch::FilterChannel, α=true, β=false) = maybethreads(buf) do bufview, zs
     forward_pass!(bufview)
-    @views bilinear_interpolate!(psf[:, :, zs], bufview.pupil_buffer, ch.interpolator, α * ch.weight, β, identity, abs2)
+    @views bilinear_interpolate!(psf[:, :, zs], bufview.focal_buffer, ch.interpolator, α * ch.weight, β, identity, abs2)
 end
 
 """

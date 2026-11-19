@@ -1,4 +1,4 @@
-using Random
+using Random, Unitful
 
 @testset "Imaging" begin
     # 16 pix aperture, 4 pix r_0, sqrt(2) wind velocity
@@ -9,28 +9,24 @@ using Random
         ts2 = DoubleSystem((3, 2), 0.6)
         ts3 = TrueSkyImage(rand(32, 32))
 
-        pc = ReadoutSpec(1e7, 0)
+        pc = ReadoutSpec(Inf)
         img_spec = ImagingSpec(ap, 16, pc)
         img_spec2 = ImagingSpec(ap, 16, pc, filter=FilterSpec(bandwidth=0.1))
         img_spec3 = ImagingSpec(ap, 16, pc, filter=FilterSpec(bandwidth=0.1, tedge=0.5), exposure=Exposure(3, 5))
 
         Random.seed!(123)
         for (ts, is) in zip((ts1, ts2, ts3), (img_spec, img_spec2, img_spec3))
-            res = simulate_images(Int32, ts, atm, is; n=16, file=nothing, verbose=false)
-            @test res isa NamedTuple
-            @test keys(res) == (:phases, :images)
+            res = simulate_images(Float32, ts, atm, is; n=16, file=nothing, verbose=false)
+            @test res isa NamedTuple{(:phases, :images)}
             images = res.images
             phases = res.phases
 
             @test size(images) == (32, 32, 16)
             @test size(phases) == (iszero(is.exposure.exptime) ? (16, 16, 16) : (19, 19, 16))
 
-            # Total photon count should be approximately correct
-            # (within reasonable variance due to Poisson noise)
-            total_photons = sum(images, dims=(1, 2))
-            expected = 1e7
-            @test total_photons ≈ fill(expected, size(total_photons)) rtol = 0.01
-            @test eltype(images) == Int32
+            psf_norms = vec(sum(images, dims=(1, 2)))
+            @test psf_norms ≈ fill(1, size(psf_norms)) rtol=0.01
+            @test eltype(images) == Float32
         end
 
         @test_throws ArgumentError simulate_images(TrueSkyImage(rand(16, 16)), atm, img_spec; n=16)
@@ -42,14 +38,15 @@ using Random
         ts_cont = PointSource()
         @test_throws ArgumentError simulate_images(Int32, ts_cont, atm, img_spec_cont; n=16)
 
-        images_cont = simulate_images(ts_cont, atm, img_spec_cont; n=16, file=nothing, verbose=false, deviceadapter=identity).images
+        set_num_threads(1)
+        images_cont = simulate_images(ts_cont, atm, img_spec_cont; n=16, file=nothing, verbose=false).images
         @test eltype(images_cont) == Float64
         @test all(>=(-eps()), images_cont)
 
         # Poisson sampling
         img_spec_poisson = ImagingSpec(ap, 16, ReadoutSpec(1e6, 100))
         ts_poisson = PointSource()
-        images_poisson = simulate_images(ts_poisson, atm, img_spec_poisson; n=16, file=nothing, verbose=false, deviceadapter=identity).images
+        images_poisson = simulate_images(ts_poisson, atm, img_spec_poisson; n=16, file=nothing, verbose=false).images
 
         @test eltype(images_poisson) == Int64
         @test all(>=(0), images_poisson)
