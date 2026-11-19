@@ -1,4 +1,4 @@
-using LinearAlgebra, HDF5, Random, ChunkSplitters
+using LinearAlgebra, HDF5, Random, ChunkSplitters, Polyester
 import Adapt: adapt_storage
 
 const DEFAULT_WAVELEN = 550nm
@@ -375,7 +375,7 @@ function harding_interpolate!(out, hi::HardingInterpolator, low, r₀_px=1, α=t
     if length(hi.work_bufs) == 1
         _harding_ladder!(out, only(hi.work_bufs), r₀_px, low, α, β)
     else
-        Threads.@threads for i in eachindex(hi.work_bufs)
+        Polyester.@batch for i in eachindex(hi.work_bufs)
             chunk = hi.chunk_ranges[i]
             _harding_ladder!(view(out, :, :, chunk), hi.work_bufs[i], r₀_px,
                 view(low, :, :, chunk), α, β)

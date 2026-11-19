@@ -66,7 +66,7 @@ function SpeckleSimulator.speckle_viewer(::Type{T}=Float64;
         atm = SingleLayer(T, first(r0_range))
         pad = NoUnits(maximum(wind_range) / d * maximum(exptime_range))
         simulate_phases(atm, ceil.(Int, size(aperture) .* (1 + pad, 1));
-            n=1, verbose=false, grid_step=d / size(aperture, 2), deviceadapter=deviceadapter)
+            n=1, grid_step=d / size(aperture, 2), deviceadapter=deviceadapter)
     end
 
     on(remove_tiptilt_btn.clicks) do _
@@ -90,7 +90,7 @@ function SpeckleSimulator.speckle_viewer(::Type{T}=Float64;
         img_spec = ImagingSpec(T, aperture, d, ReadoutSpec(Inf);
             filter=FilterSpec(wl; bandwidth=bw, npts=iszero(bw) ? 0 : ceil(Int, NoUnits(bw / wl) * 20 + 3)),
             exposure=Exposure(exptime))
-        out = simulate_images(atm, img_spec; n=1, verbose=false, savephases=false, deviceadapter=deviceadapter)
+        out = simulate_images(atm, img_spec; n=1, savephases=false, deviceadapter=deviceadapter)
         return Float32.(out.images[:, :, 1])
     end
 

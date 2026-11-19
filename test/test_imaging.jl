@@ -26,7 +26,7 @@ using Random, Unitful
 
         Random.seed!(123)
         for (ts, is) in zip((ts1, ts2, ts3), (img_spec, img_spec2, img_spec3))
-            res = simulate_images(Float32, ts, atm, is; n=16, file=nothing, verbose=false)
+            res = simulate_images(Float32, ts, atm, is; n=16, file=nothing)
             @test res isa NamedTuple{(:phases, :images)}
             images = res.images
             phases = res.phases
@@ -49,14 +49,14 @@ using Random, Unitful
         @test_throws ArgumentError simulate_images(Int32, ts_cont, atm, img_spec_cont; n=16)
 
         set_num_threads(1)
-        images_cont = simulate_images(ts_cont, atm, img_spec_cont; n=16, file=nothing, verbose=false).images
+        images_cont = simulate_images(ts_cont, atm, img_spec_cont; n=16, file=nothing).images
         @test eltype(images_cont) == Float64
         @test all(>=(-eps()), images_cont)
 
         # Poisson sampling
         img_spec_poisson = ImagingSpec(ap, 16, ReadoutSpec(1e6, 100))
         ts_poisson = PointSource()
-        images_poisson = simulate_images(ts_poisson, atm, img_spec_poisson; n=16, file=nothing, verbose=false).images
+        images_poisson = simulate_images(ts_poisson, atm, img_spec_poisson; n=16, file=nothing).images
 
         @test eltype(images_poisson) == Int64
         @test all(>=(0), images_poisson)
@@ -67,8 +67,7 @@ using Random, Unitful
         img_spec_float = ImagingSpec(ap, 16, ReadoutSpec(Inf))
 
         tmpfile = tempname() * ".h5"
-        simulate_images(Float32, ts, atm, img_spec_float; n=16, file=tmpfile, savephases=false,
-            verbose=false)
+        simulate_images(Float32, ts, atm, img_spec_float; n=16, file=tmpfile, savephases=false)
 
         h5open(tmpfile, "r") do fid
             @test haskey(fid, "images")
@@ -94,17 +93,17 @@ using Random, Unitful
         res_e = simulate_images(atm, img_spec2, n=10)
         img_e1 = res_e.images
         img_e2 = simulate_images(SavedPhases(res_e.phases; wind_velocity=(1, 1)), img_spec2,
-            n=10, batch=7, verbose=false).images
+            n=10, batch=7).images
         @test img_e1 == img_e2
 
         img_spec3 = ImagingSpec(ap, 16, ReadoutSpec(1e6, 100), exposure=Exposure(3, 3))
-        phs, img_d1 = simulate_images(atm, img_spec3, n=10, batch=7, verbose=false)
+        phs, img_d1 = simulate_images(atm, img_spec3, n=10, batch=7)
         Random.seed!(123)
         img_d2 = simulate_images(SavedPhases(phs; wind_velocity=(1, 1)), img_spec3,
-            n=10, batch=7, verbose=false).images
+            n=10, batch=7).images
         Random.seed!(123)
         img_d3 = simulate_images(SavedPhases(phs; wind_velocity=(-1, -1)), img_spec3,
-            n=11, batch=7, verbose=false).images
+            n=11, batch=7).images
         Random.seed!(123)
         @test img_d2 == img_d3[:, :, 1:10] # Should be the same except for the last frame
 
@@ -117,18 +116,18 @@ using Random, Unitful
         img_spec1 = ImagingSpec(ap, 4, ReadoutSpec(Inf), exposure=1)
         atm1 = SingleLayer(1, wind_velocity=(0.75, 0.75), harding=(; nsteps=:auto))
         Random.seed!(123)
-        res1 = simulate_images(atm1, img_spec1, n=10, verbose=false)
+        res1 = simulate_images(atm1, img_spec1, n=10)
 
         # 2 m aperture, 0.5 m r_0, sqrt(2)/8 m/s wind velocity, 3 s exposure
         img_spec2 = ImagingSpec(ap, 2m, ReadoutSpec(Inf), exposure=3s)
         atm2 = SingleLayer(50cm, wind_velocity=(0.125m/s, 0.125m/s), harding=(; nsteps=:auto))
         Random.seed!(123)
-        res2 = simulate_images(atm2, img_spec2, n=10, verbose=false)
+        res2 = simulate_images(atm2, img_spec2, n=10)
 
         @test res1.phases ≈ res2.phases
         @test res1.images ≈ res2.images
 
         img_spec_bad = ImagingSpec(ap, 2.0u"m", ReadoutSpec(Inf); exposure=Exposure(3.0u"m", 5))
-        @test_throws Unitful.DimensionError simulate_images(atm1, img_spec_bad; n=4, file=nothing, verbose=false)
+        @test_throws Unitful.DimensionError simulate_images(atm1, img_spec_bad; n=4, file=nothing)
     end
 end

@@ -32,7 +32,7 @@
         atm = SingleLayer(5.0)
         tmpfile = tempname() * ".h5"
         @test_throws ArgumentError simulate_phases(atm, (32, 32); n=16, file=tmpfile)
-        res = simulate_phases(atm, (32, 32), 25; n=16, file=tmpfile, verbose=false)
+        res = simulate_phases(atm, (32, 32), 25; n=16, file=tmpfile)
         @test res === nothing  # When filename is given, should return nothing
         phases = h5read(tmpfile, "phases")
         @test size(phases) == (32, 32, 16)
@@ -47,21 +47,21 @@
 
         h5open(tmpfile, "r") do fid
             atm = SavedPhases(fid["phases"])
-            @test_throws BoundsError simulate_phases(atm, (6, 7); n = 12, batch=3, verbose=false)
-            @test_throws ArgumentError simulate_phases(atm, (10, 10); n=1, verbose=false)
+            @test_throws BoundsError simulate_phases(atm, (6, 7); n = 12, batch=3)
+            @test_throws ArgumentError simulate_phases(atm, (10, 10); n=1)
 
-            phases = simulate_phases(atm, (6, 7); n=9, batch=3, verbose=false)
+            phases = simulate_phases(atm, (6, 7); n=9, batch=3)
             @test eltype(phases) == Float32
             @test phases[:, :, 1:7] == data
 
-            phases2 = simulate_phases(atm, (4, 5); n=3, verbose=false)
+            phases2 = simulate_phases(atm, (4, 5); n=3)
             @test phases2[:, :, 1:3] == data[1:4, 1:5, 1:3]
 
             @test_throws ArgumentError SavedPhases(fid["phases"], 7)
 
             atm2 = SavedPhases(fid["phases"]; grid_step=1, base_wavelength=500.0)
             @test atm2.base_wavelength == 500.0u"nm"
-            @test_throws ArgumentError simulate_phases(atm2, (6, 7), 8; n=1, verbose=false)
+            @test_throws ArgumentError simulate_phases(atm2, (6, 7), 8; n=1)
         end
         rm(tmpfile, force=true)
     end
@@ -73,7 +73,7 @@
 
         Random.seed!(123)
         for atm in (atm1, atm2)
-            phases = simulate_phases(atm, (64, 64), 2m; n=1000, verbose=false)
+            phases = simulate_phases(atm, (64, 64), 2m; n=1000)
             @test eltype(phases) == Float32
 
             for D in [(3, 2), (3, 15), (5, 5), (5, 20), (16, 2), (16, 16)]

@@ -1,3 +1,5 @@
+using ProgressLogging
+
 function padded_plate_size(atm_spec::AtmosphereSpec, img_spec::ImagingSpec)
     if iszero(img_spec.exposure.exptime) || all(iszero, atm_spec.wind_velocity)
         return plate_size(img_spec)
@@ -49,25 +51,25 @@ end
 batch_length(sb::SimulationBuffers) = batch_length(sb.phase_buffers)
 
 function simulation_run!!(img_bd::BufferedDataset, phs_bd::BufferedDataset,
-        sb::SimulationBuffers, true_sky_adapt, n; verbose=true)
+        sb::SimulationBuffers, true_sky_adapt, n)
     batch = batch_length(sb)
-    p = Progress(n, desc="Simulating images", enabled=verbose, dt=1)
-    for j in 1:cld(n, batch)
+    @withprogress name="Simulating images" for j in 1:cld(n, batch)
         samplephases!(sb.phases, sb.phase_buffers)
         if !isnothing(sb.optical_buffers) && !isnothing(sb.img_plan) && !isnothing(sb.psf) && !isnothing(sb.images)
-            compute_psf!(sb.psf, sb.optical_buffers, sb.img_plan, sb.phases)
-            apply_truesky!(sb.psf, true_sky_adapt, sb.optical_buffers)
-            readout!(sb.images, sb.psf, sb.img_plan.spec.readout_spec)
+            @views maybethreads(sb.optical_buffers) do bufview, zs
+                compute_psf!(sb.psf[:, :, zs], bufview, sb.img_plan, sb.phases[:, :, zs])
+                apply_truesky!(sb.psf[:, :, zs], true_sky_adapt, bufview)
+                readout!(sb.images[:, :, zs], sb.psf[:, :, zs], sb.img_plan.spec.readout_spec)
+            end
             write_batch!(img_bd, j, sb.images)
         end
         write_batch!(phs_bd, j, sb.phases)
-        next!(p, step=min(batch, n - (j - 1) * batch))
+        @logprogress max(j * batch / n, 1.0)
     end
-    finish!(p)
 end
 
 function simulation_run(file, sb::SimulationBuffers, true_sky_adapt, n;
-            verbose=true, savephases::Bool=true)
+            savephases::Bool=true)
     open_file(file) do fid
         batch = batch_length(sb)
         if sb.images !== nothing
@@ -82,7 +84,7 @@ function simulation_run(file, sb::SimulationBuffers, true_sky_adapt, n;
         else
             phs_bd = BufferedDataset(nothing)
         end
-        simulation_run!!(img_bd, phs_bd, sb, true_sky_adapt, n; verbose=verbose)
+        simulation_run!!(img_bd, phs_bd, sb, true_sky_adapt, n)
         _data(x) = x.dataset isa Array ? x.dataset : nothing
         if sb.images === nothing
             return _data(phs_bd)
@@ -98,7 +100,7 @@ function simulation_run(file, sb::SimulationBuffers, true_sky_adapt, n;
 end
 
 """
-    simulate_phases(atm_spec::AtmosphereSpec, plate_size[, d]; n, [grid_step, batch, file, verbose, deviceadapter])
+    simulate_phases(atm_spec::AtmosphereSpec, plate_size[, d]; n, [grid_step, batch, file, deviceadapter])
 
 Simulate `n` phase screens using the provided atmosphere specification and write
 the results to an HDF5 file.
@@ -120,22 +122,21 @@ count with `set_num_threads`.
 - `batch`: batch size for buffered computations and HDF5 writes (default 128).
 - `file`: output options. Can be a string (filename) or an `HDF5File` object. If set to `nothing`
     (default), no file is written and the phases are returned as an array.
-- `verbose`: show progress meter (true by default).
 - `deviceadapter`: adapter for device-backed arrays. To use GPU arrays, pass e.g. `CUDA.CuArray`
     (requires CUDA.jl).
 """
 function simulate_phases(atm_spec::AtmosphereSpec, plate_size, d=nothing::Maybe{Number}; n::Int,
         grid_step::Maybe{Number}=nothing, batch::Int=DEFAULT_BATCH, file=nothing,
-        verbose=true, deviceadapter=identity)
+        deviceadapter=identity)
     batch = min(batch, n)
     grid_step_resolved = _resolve_grid_step(d, grid_step, plate_size, !(atm_spec isa SavedPhases))
     phase_buffers = _phase_sampler(atm_spec, plate_size, grid_step_resolved, batch, deviceadapter)
-    simulation_run(file, SimulationBuffers(phase_buffers), nothing, n; verbose=verbose)
+    simulation_run(file, SimulationBuffers(phase_buffers), nothing, n)
 end
 
 """
     simulate_images([T, true_sky::TrueSky, ]atm_spec::AtmosphereSpec, img_spec::ImagingSpec; \
-        n, [batch, file, verbose, savephases, deviceadapter])
+        n, [batch, file, savephases, deviceadapter])
 
 Simulate `n` images using the provided imaging and atmosphere specifications and write
 the results to an HDF5 file.
@@ -158,14 +159,13 @@ exposure fits.
 - `batch`: batch size for buffered computations and HDF5 writes (default 128).
 - `file`: output options. Can be a string (filename) or an `HDF5File` object. If set to `nothing`
     (default), no file is written and the images and phases are returned as a `NamedTuple` of arrays.
-- `verbose`: show progress meter (true by default).
 - `savephases`: when true (default), the sampled phase screens are saved in the HDF5 in dataset with
   key `"phases"`.
 - `deviceadapter`: adapter for device-backed arrays (default `identity`, i. e. no transform). To use GPU
   arrays, pass e.g. `CUDA.CuArray` here (requires CUDA.jl).
 """
 function simulate_images(::Type{T}, true_sky::TrueSky, atm_spec::AtmosphereSpec, img_spec::ImagingSpec;
-    n::Int, batch::Int=DEFAULT_BATCH, file=nothing, verbose=true, savephases::Bool=true, deviceadapter=identity) where {T}
+    n::Int, batch::Int=DEFAULT_BATCH, file=nothing, savephases::Bool=true, deviceadapter=identity) where {T}
     if !isfinite_photons(img_spec.readout_spec) && T <: Integer
         throw(ArgumentError("Integer image eltype not compatible with infinite-photon imaging spec."))
     end
@@ -177,7 +177,7 @@ function simulate_images(::Type{T}, true_sky::TrueSky, atm_spec::AtmosphereSpec,
     batch = min(batch, n)
     true_sky_adapt = adapt(deviceadapter, true_sky)
     simulation_run(file, SimulationBuffers(T, atm_spec, img_spec; batch, deviceadapter), true_sky_adapt, n;
-        verbose=verbose, savephases=savephases)
+        savephases=savephases)
 end
 simulate_images(::Type{T}, atm_spec::AtmosphereSpec, img_spec::ImagingSpec; kwargs...) where {T} =
     simulate_images(T, PointSource(), atm_spec, img_spec; kwargs...)

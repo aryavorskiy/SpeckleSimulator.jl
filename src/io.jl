@@ -1,4 +1,4 @@
-using HDF5, ProgressMeter
+using HDF5
 
 const DEFAULT_BATCH = 128
 

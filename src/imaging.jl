@@ -1,4 +1,4 @@
-using ChunkSplitters, Distributions, FFTW, HDF5, LinearAlgebra, ProgressMeter
+using ChunkSplitters, Distributions, FFTW, HDF5, LinearAlgebra, Polyester
 import Adapt: adapt, adapt_storage, adapt_structure
 
 """
@@ -427,22 +427,24 @@ that take an `OpticalBuffers` process the chunks in parallel; with a single chun
   method, where the batch is the third dimension of the array.
 - `nthreads`: maximum number of worker threads (default `get_num_threads()`).
 """
-struct OpticalBuffers{MT, PT, CT}
+struct OpticalBuffers{MT <: AbstractArray,
+        PTVec <: Union{Vector,Tuple},
+        CTVec <: Union{Vector,Tuple}}
     pupil_buffer::MT
     focal_buffer::MT
-    fftplans::Vector{PT}
-    chunk_ranges::Vector{CT}
+    fftplans::PTVec
+    chunk_ranges::CTVec
 end
 image_size(bufs::OpticalBuffers) = size(bufs.pupil_buffer)[1:2]
 batch_length(bufs::OpticalBuffers) = size(bufs.pupil_buffer, 3)
 function maybethreads(f::Function, bufs::OpticalBuffers)
-    if length(bufs.chunk_ranges) == 1 || bufs.pupil_buffer isa SubArray
+    if length(bufs.chunk_ranges) == 1
         f(bufs, :)
     else
-        Threads.@threads for j in eachindex(bufs.chunk_ranges)
+        Polyester.@batch for j in eachindex(bufs.chunk_ranges)
             zs = bufs.chunk_ranges[j]
             @views f(OpticalBuffers(bufs.pupil_buffer[:, :, zs], bufs.focal_buffer[:, :, zs],
-                [bufs.fftplans[j]], [zs]), zs)
+                (bufs.fftplans[j],), (zs,)), zs)
         end
     end
 end
