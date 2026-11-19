@@ -24,7 +24,12 @@ exposure fits, its grid step is `img_spec.grid_step`, and the plan is adapted to
 The worker count for `optical_buffers` and the Harding interpolator is `get_num_threads()` at
 construction time.
 """
-struct SimulationBuffers{PB, PhT, OB, PlanT, PsfT, OutT}
+struct SimulationBuffers{PB,
+        PhT <: AbstractArray,
+        OB <: Maybe{OpticalBuffers},
+        PlanT <: Maybe{ImagingPlan},
+        PsfT <: Maybe{AbstractArray},
+        OutT <: Maybe{AbstractArray}}
     phase_buffers::PB
     phases::PhT
     optical_buffers::OB
@@ -48,10 +53,10 @@ function simulation_run!!(img_bd::BufferedDataset, phs_bd::BufferedDataset,
     p = Progress(n, desc="Simulating images", enabled=verbose, dt=1)
     for j in 1:cld(n, batch)
         samplephases!(sb.phases, sb.phase_buffers)
-        if sb.optical_buffers !== nothing
+        if !isnothing(sb.optical_buffers) && !isnothing(sb.img_plan) && !isnothing(sb.psf) && !isnothing(sb.images)
             compute_psf!(sb.psf, sb.optical_buffers, sb.img_plan, sb.phases)
             apply_truesky!(sb.psf, true_sky_adapt, sb.optical_buffers)
-            readout!(sb.images, sb.psf, sb.img_plan.img_spec.readout)
+            readout!(sb.images, sb.psf, sb.img_plan.spec.readout_spec)
             write_batch!(img_bd, j, sb.images)
         end
         write_batch!(phs_bd, j, sb.phases)

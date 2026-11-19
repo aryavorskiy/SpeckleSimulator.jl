@@ -438,8 +438,9 @@ function maybethreads(f::Function, bufs::OpticalBuffers)
     if length(bufs.chunk_ranges) == 1 || bufs.pupil_buffer isa SubArray
         f(bufs, :)
     else
-        Threads.@threads for (j, zs) in enumerate(bufs.chunk_ranges)
-            @views f(OpticalBuffers(bufs.pupil_buffer[:, :, ], bufs.focal_buffer[:, :, ],
+        Threads.@threads for j in eachindex(bufs.chunk_ranges)
+            zs = bufs.chunk_ranges[j]
+            @views f(OpticalBuffers(bufs.pupil_buffer[:, :, zs], bufs.focal_buffer[:, :, zs],
                 [bufs.fftplans[j]], [zs]), zs)
         end
     end
