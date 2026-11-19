@@ -1,14 +1,14 @@
 using Documenter
-using AtmosphericTurbulenceSimulator
+using SpeckleSimulator
 using CairoMakie
 
 ENV["GKSwstype"] = "100"
 
-DocMeta.setdocmeta!(AtmosphericTurbulenceSimulator, :DocTestSetup, :(using AtmosphericTurbulenceSimulator); recursive=true)
+DocMeta.setdocmeta!(SpeckleSimulator, :DocTestSetup, :(using SpeckleSimulator); recursive=true)
 
 makedocs(
-    sitename = "AtmosphericTurbulenceSimulator.jl",
-    modules = [AtmosphericTurbulenceSimulator, Base.get_extension(AtmosphericTurbulenceSimulator, :MakieExt)],
+    sitename = "SpeckleSimulator.jl",
+    modules = [SpeckleSimulator, Base.get_extension(SpeckleSimulator, :MakieExt)],
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", "false") == "true",
         assets = [asset("assets/favicon-96x96.png", class=:ico, islocal=true)],
@@ -21,6 +21,6 @@ makedocs(
 )
 
 deploydocs(
-    repo = "github.com/aryavorskiy/AtmosphericTurbulenceSimulator.jl.git",
+    repo = "github.com/aryavorskiy/SpeckleSimulator.jl.git",
     devbranch = "master",
 )

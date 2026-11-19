@@ -1,4 +1,4 @@
-import AtmosphericTurbulenceSimulator: BufferedDataset, read_batch!, write_batch!, HDF5File, open_file, prepare_dataset
+import SpeckleSimulator: BufferedDataset, read_batch!, write_batch!, HDF5File, open_file, prepare_dataset
 
 @testset "IO" begin
     @testset "BufferedDataset" begin

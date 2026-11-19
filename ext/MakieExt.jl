@@ -1,6 +1,6 @@
 module MakieExt
 
-using AtmosphericTurbulenceSimulator, Makie, Unitful
+using SpeckleSimulator, Makie, Unitful
 
 # Slider label formatter: render a Unitful quantity but write inverse units with a slash
 # (e.g. "50 cm/s" instead of "50 cm s⁻¹").
@@ -33,7 +33,7 @@ the speckle image is recomputed on any control change. A fixed circular aperture
 - `aperture`: aperture array (defaults to 64×64 circular aperture).
 - `deviceadapter`: adapter for device-backed arrays, passed to the simulation (default `identity`).
 """
-function AtmosphericTurbulenceSimulator.speckle_viewer(::Type{T}=Float64;
+function SpeckleSimulator.speckle_viewer(::Type{T}=Float64;
         wavelength_range = (550:10:750)nm,
         bw_range = (0:10:100)nm,
         exptime_range = (0:0.1:3)s,
@@ -96,7 +96,7 @@ function AtmosphericTurbulenceSimulator.speckle_viewer(::Type{T}=Float64;
 
     axis_kw = (aspect=DataAspect(), xticklabelspace=24.0, yticklabelspace=30.0)
     cbar_height(ax) = lift(vp -> vp.widths[2], ax.scene.viewport)
-    ap_step = d / AtmosphericTurbulenceSimulator.diameter(aperture)
+    ap_step = d / SpeckleSimulator.diameter(aperture)
     ap_x, ap_y = ustrip.(axes(aperture) .* ap_step)
 
     phase_screen_2d = lift(phs -> phs[axes(aperture)..., 1], phase_screen_scaled)

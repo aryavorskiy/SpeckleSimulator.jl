@@ -1,16 +1,16 @@
 # API Reference
 
 ```@meta
-CurrentModule = AtmosphericTurbulenceSimulator
+CurrentModule = SpeckleSimulator
 ```
 
 ```@index
-Modules = [AtmosphericTurbulenceSimulator]
+Modules = [SpeckleSimulator]
 ```
 
 ## Setting up the atmosphere model
 ```@autodocs
-Modules = [AtmosphericTurbulenceSimulator]
+Modules = [SpeckleSimulator]
 Pages = ["atmosphere.jl"]
 Filter = t -> t !== samplephases!
 ```
@@ -21,12 +21,12 @@ samplephases!
 
 ## Imaging specifications
 ```@autodocs
-Modules = [AtmosphericTurbulenceSimulator]
+Modules = [SpeckleSimulator]
 Pages = ["imaging.jl"]
 ```
 
 ## Running simulations
 ```@autodocs
-Modules = [AtmosphericTurbulenceSimulator]
+Modules = [SpeckleSimulator]
 Pages = ["simulation.jl", "io.jl"]
 ```

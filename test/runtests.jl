@@ -1,5 +1,5 @@
 using Test
-using AtmosphericTurbulenceSimulator
+using SpeckleSimulator
 using LinearAlgebra, Random, Statistics
 using HDF5, ProgressMeter, ChunkSplitters
 using JET

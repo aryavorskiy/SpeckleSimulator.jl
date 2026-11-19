@@ -1,4 +1,4 @@
-module AtmosphericTurbulenceSimulator
+module SpeckleSimulator
 
 using Unitful
 export @u_str
@@ -31,4 +31,4 @@ include("precompile.jl")
 function speckle_viewer end
 export speckle_viewer
 
-end # module AtmosphericTurbulenceSimulator
+end # module SpeckleSimulator

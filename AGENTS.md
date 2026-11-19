@@ -18,7 +18,7 @@ julia --project=test test/runtests.jl
 
 Run a single test file (e.g. `test_atmosphere.jl`) without waiting for the full suite:
 ```
-julia --project=test -e 'using Test, AtmosphericTurbulenceSimulator, LinearAlgebra, Statistics, HDF5, ProgressMeter; include("test/test_atmosphere.jl")'
+julia --project=test -e 'using Test, SpeckleSimulator, LinearAlgebra, Statistics, HDF5, ProgressMeter; include("test/test_atmosphere.jl")'
 ```
 
 When running tests, show all output from `Precompiling packages finished.` onward — everything before it is package-version noise.
@@ -27,7 +27,7 @@ When running tests, show all output from `Precompiling packages finished.` onwar
 
 ```
 src/
-  AtmosphericTurbulenceSimulator.jl  # Module, includes/exports, `speckle_viewer` stub
+  SpeckleSimulator.jl  # Module, includes/exports, `speckle_viewer` stub
   utils.jl        # get_num_threads / set_num_threads, device_eigen, diameter, Maybe
   io.jl           # BufferedDataset, read_batch!, write_batch!, HDF5File, open_file, prepare_dataset
   atmosphere.jl   # Phase generation: kolmogorov_covmat, KarhunenLoeveSampler, HardingInterpolator,

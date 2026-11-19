@@ -1,6 +1,6 @@
 # Overview
 
-AtmosphericTurbulenceSimulator.jl simulates atmospheric turbulence effects in telescope imaging.
+SpeckleSimulator.jl simulates atmospheric turbulence effects in telescope imaging.
 It provides tools for sampling turbulent phase screens, propagating them through a pupil model, and
 generating image sequences for point sources, binary systems, and extended sky images.
 
@@ -21,7 +21,7 @@ The package is not registered yet. Install it from the Julia REPL with:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/aryavorskiy/AtmosphericTurbulenceSimulator.jl")
+Pkg.add(url="https://github.com/aryavorskiy/SpeckleSimulator.jl")
 ```
 
 ## Core Workflow
@@ -38,7 +38,7 @@ The main entry point is [`simulate_images`](@ref), which takes these pieces and 
 images.
 
 ```@example quick_start
-using AtmosphericTurbulenceSimulator, CairoMakie
+using SpeckleSimulator, CairoMakie
 
 aperture = CircularAperture((64, 64), 30)
 img_spec = ImagingSpec(aperture, 2, ReadoutSpec(1e7, 200); filter=FilterSpec(550, bandwidth=40))
@@ -141,7 +141,7 @@ speckle_viewer
 This widget is powered by [Makie](https://docs.makie.org/). Import an interactive backend (`GLMakie`/`WGLMakie`) to use it:
 
 ```julia
-using AtmosphericTurbulenceSimulator, GLMakie
+using SpeckleSimulator, GLMakie
 speckle_viewer()
 ```
 

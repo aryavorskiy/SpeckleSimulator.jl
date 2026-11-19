@@ -1,4 +1,4 @@
-import AtmosphericTurbulenceSimulator: isfinite_photons, convert_numtype,
+import SpeckleSimulator: isfinite_photons, convert_numtype,
     nstages, plate_size
 using Unitful
 

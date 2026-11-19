@@ -1,13 +1,13 @@
 <p align="center">
-    <img alt="AtmosphericTurbulenceSimulator logo" src="https://raw.githubusercontent.com/aryavorskiy/AtmosphericTurbulenceSimulator.jl/master/docs/src/assets/logo.svg" />
+    <img alt="SpeckleSimulator logo" src="https://raw.githubusercontent.com/aryavorskiy/SpeckleSimulator.jl/master/docs/src/assets/logo.svg" />
 </p>
 
-# AtmosphericTurbulenceSimulator.jl
+# SpeckleSimulator.jl
 
 | | | |
 |:---:|:---:|:---:|
-| [![docs-stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://aryavorskiy.github.io/AtmosphericTurbulenceSimulator.jl/stable/) | [![docs-dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://aryavorskiy.github.io/AtmosphericTurbulenceSimulator.jl/dev/) | [![DOI](https://zenodo.org/badge/1108761097.svg)](https://doi.org/10.5281/zenodo.20734890) |
-| [![CI](https://github.com/aryavorskiy/AtmosphericTurbulenceSimulator.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/aryavorskiy/AtmosphericTurbulenceSimulator.jl/actions/workflows/ci.yml)  | [![codecov](https://codecov.io/gh/aryavorskiy/AtmosphericTurbulenceSimulator.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/aryavorskiy/AtmosphericTurbulenceSimulator.jl) | [![JET](https://img.shields.io/badge/%F0%9F%9B%A9%EF%B8%8F_tested_with-JET.jl-233f9a)](https://github.com/aviatesk/JET.jl) |  |
+| [![docs-stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://aryavorskiy.github.io/SpeckleSimulator.jl/stable/) | [![docs-dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://aryavorskiy.github.io/SpeckleSimulator.jl/dev/) | [![DOI](https://zenodo.org/badge/1108761097.svg)](https://doi.org/10.5281/zenodo.20734890) |
+| [![CI](https://github.com/aryavorskiy/SpeckleSimulator.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/aryavorskiy/SpeckleSimulator.jl/actions/workflows/ci.yml)  | [![codecov](https://codecov.io/gh/aryavorskiy/SpeckleSimulator.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/aryavorskiy/SpeckleSimulator.jl) | [![JET](https://img.shields.io/badge/%F0%9F%9B%A9%EF%B8%8F_tested_with-JET.jl-233f9a)](https://github.com/aviatesk/JET.jl) |  |
 
 A simple (yet) Julia toolchain for simulating atmospheric turbulence effects on imaging systems.
 
@@ -17,12 +17,12 @@ This package is not registered yet. You can install it with the following comman
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/aryavorskiy/AtmosphericTurbulenceSimulator.jl")
+Pkg.add(url="https://github.com/aryavorskiy/SpeckleSimulator.jl")
 ```
 
 For a quick interactive demo, install [`GLMakie`](https://github.com/MakieOrg/Makie.jl) and launch the speckle viewer:
 ```julia
-using AtmosphericTurbulenceSimulator, GLMakie
+using SpeckleSimulator, GLMakie
 speckle_viewer()
 ```
 
@@ -32,7 +32,7 @@ To simulate speckle patterns formed by turbulence, define an atmosphere specific
 specification and a true-sky model:
 
 ```julia
-using AtmosphericTurbulenceSimulator
+using SpeckleSimulator
 
 # Define circular aperture and imaging parameters
 ap = CircularAperture((64, 64))

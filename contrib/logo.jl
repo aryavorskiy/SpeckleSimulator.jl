@@ -1,4 +1,4 @@
-using AtmosphericTurbulenceSimulator, CairoMakie, Random
+using SpeckleSimulator, CairoMakie, Random
 Random.seed!(20260716)
 
 const NGRID = 64

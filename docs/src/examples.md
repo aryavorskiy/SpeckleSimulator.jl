@@ -5,7 +5,7 @@ and short sequences so they can run quickly in documentation builds; increase `n
 batch size for production runs.
 
 ```@meta
-CurrentModule = AtmosphericTurbulenceSimulator
+CurrentModule = SpeckleSimulator
 ```
 
 ## Phase Screen Generation
@@ -17,7 +17,7 @@ the grid size and the physical scale of the aperture.
 For a 2 m window represented on a 64-pixel pupil grid with ``r_0 = 0.2`` m:
 
 ```@example phase_generation
-using AtmosphericTurbulenceSimulator
+using SpeckleSimulator
 
 atm = SingleLayer(0.2)                              # r0 = 0.2 m
 phases = simulate_phases(atm, (64, 64), 2; n=512)   # d = 2 m aperture
@@ -80,7 +80,7 @@ ships three true-sky models:
   the final imaging grid size, not the aperture size.
 
 ```@example true_sky
-using AtmosphericTurbulenceSimulator
+using SpeckleSimulator
 using CairoMakie, Statistics
 
 aperture = CircularAperture((64, 64))
@@ -134,7 +134,7 @@ Running two independent [`SingleLayer`](@ref) simulations would draw uncorrelate
 lose the physical relationship between the bands.
 
 ```@example multiband
-using AtmosphericTurbulenceSimulator
+using SpeckleSimulator
 using CairoMakie, Statistics
 
 aperture = CircularAperture((64, 64), 30)
@@ -182,7 +182,7 @@ which replays a sequence of phase screens from an array. First, generate a large
 padding so that the wind shift fits inside it:
 
 ```@example variable_exposure
-using AtmosphericTurbulenceSimulator, CairoMakie
+using SpeckleSimulator, CairoMakie
 # r0 = 0.2 m, aperture d = 2 m represented on 64 pixels → r0 in same units as d
 atm = SingleLayer(0.2m, harding=(; nsteps=:auto))
 phases = simulate_phases(atm, (128, 128); n=1, grid_step=2m/64)
@@ -220,7 +220,7 @@ fig
 For large runs, write directly to HDF5 instead of holding all frames in memory:
 
 ```@example hdf5_output
-using AtmosphericTurbulenceSimulator
+using SpeckleSimulator
 using HDF5
 
 aperture = CircularAperture((64, 64), 30)

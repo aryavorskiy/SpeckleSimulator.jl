@@ -12,14 +12,14 @@
 #   broadband – 7-wavelength filter, zero exposure time
 #   long_exp  – monochromatic, 7-step long exposure with wind
 
-using AtmosphericTurbulenceSimulator
+using SpeckleSimulator
 
 if abspath(PROGRAM_FILE) == @__FILE__
     length(ARGS) >= 1 || error("Usage: bench_v0_5.jl <version_tag> [output.csv]")
     const VERSION_TAG = lowercase(ARGS[1])
     outfile = length(ARGS) >= 2 ? ARGS[2] : "results_$(VERSION_TAG).csv"
 else
-    const VERSION_TAG = string(Base.pkgversion(AtmosphericTurbulenceSimulator))
+    const VERSION_TAG = string(Base.pkgversion(SpeckleSimulator))
     !@isdefined(outfile) && (outfile = "/dev/null")
 end
 
